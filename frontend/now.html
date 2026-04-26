@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Now — HA Energy Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.13.0/dist/cdn.min.js"></script>
 </head>
 <body class="bg-gray-50 text-gray-900">
 
@@ -15,12 +17,142 @@
     <a href="/costs.html" class="text-gray-500 hover:text-blue-600">Costs</a>
 </nav>
 
-<div class="max-w-6xl mx-auto px-6">
-    <h1 class="text-2xl font-bold mb-4">Now</h1>
-    <div class="bg-white p-6 rounded shadow text-gray-500">
-        Live overzicht — komt in sessie 1c.
+<div class="max-w-6xl mx-auto px-6" x-data="nowApp()" x-init="init()">
+
+    <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <h1 class="text-2xl font-bold">Now</h1>
+        <div class="text-sm text-gray-500">
+            Auto-refresh elke 30s · laatste update <span x-text="lastUpdate"></span>
+        </div>
     </div>
+
+    <div x-show="loading && !kpi" class="bg-white p-6 rounded shadow text-gray-500">
+        Laden...
+    </div>
+    <div x-show="error" class="bg-red-50 border border-red-200 text-red-700 p-4 rounded mb-4"
+         x-text="error"></div>
+
+    <!-- KPI cards -->
+    <div x-show="kpi" class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Grid</div>
+            <div class="text-xl font-semibold"
+                 :class="(kpi?.grid_w ?? 0) >= 0 ? 'text-blue-600' : 'text-green-600'"
+                 x-text="formatW(kpi?.grid_w)"></div>
+            <div class="text-xs text-gray-400"
+                 x-text="(kpi?.grid_w ?? 0) >= 0 ? 'import' : 'export'"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">PV-productie</div>
+            <div class="text-xl font-semibold text-yellow-600" x-text="formatW(kpi?.pv_w)"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Huishouden</div>
+            <div class="text-xl font-semibold" x-text="formatW(kpi?.house_w)"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Import-prijs</div>
+            <div class="text-xl font-semibold"
+                 x-text="formatPrice(kpi?.import_price_eur_per_kwh)"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Buitentemp</div>
+            <div class="text-xl font-semibold" x-text="formatTemp(kpi?.outside_temp_c)"></div>
+        </div>
+    </div>
+
+    <!-- 6h trend -->
+    <div x-show="kpi" class="bg-white p-4 rounded shadow">
+        <h2 class="text-sm text-gray-500 mb-2">Laatste 6 uur (5-min gemiddelden)</h2>
+        <div id="trend-chart" class="h-72"></div>
+    </div>
+
 </div>
+
+<script>
+function nowApp() {
+    return {
+        kpi: null,
+        trend: [],
+        loading: false,
+        error: null,
+        lastUpdate: '–',
+        timer: null,
+
+        init() {
+            this.load();
+            // Auto-refresh elke 30s. setInterval blijft draaien zolang de tab open is.
+            this.timer = setInterval(() => this.load(), 30000);
+        },
+
+        async load() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const r = await fetch('/api/overview');
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                const data = await r.json();
+                this.kpi = data.kpi;
+                this.trend = data.trend_6h;
+                this.lastUpdate = new Date().toLocaleTimeString('nl-NL');
+                this.$nextTick(() => this.draw());
+            } catch (e) {
+                this.error = `Fout bij laden: ${e.message}`;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        formatW(w) {
+            if (w === null || w === undefined) return '–';
+            const abs = Math.abs(w);
+            if (abs >= 1000) return (w / 1000).toFixed(2) + ' kW';
+            return Math.round(w) + ' W';
+        },
+
+        formatPrice(p) {
+            if (p === null || p === undefined) return '–';
+            return '€ ' + p.toFixed(4) + '/kWh';
+        },
+
+        formatTemp(t) {
+            if (t === null || t === undefined) return '–';
+            return t.toFixed(1) + ' °C';
+        },
+
+        draw() {
+            const t = this.trend;
+            if (!t || t.length === 0) return;
+
+            const xs = t.map(p => p.ts);
+            const traces = [
+                {
+                    type: 'scatter', mode: 'lines', name: 'PV',
+                    x: xs, y: t.map(p => p.pv_w),
+                    line: { color: '#facc15', width: 2 },
+                },
+                {
+                    type: 'scatter', mode: 'lines', name: 'Grid (+import / −export)',
+                    x: xs, y: t.map(p => p.grid_w),
+                    line: { color: '#3b82f6', width: 2 },
+                },
+                {
+                    type: 'scatter', mode: 'lines', name: 'Huishouden',
+                    x: xs, y: t.map(p => p.house_w),
+                    line: { color: '#6b7280', width: 2 },
+                },
+            ];
+            const layout = {
+                xaxis: { type: 'date' },
+                yaxis: { title: 'W', zeroline: true, zerolinewidth: 1 },
+                margin: { t: 10, l: 60, r: 20, b: 40 },
+                legend: { orientation: 'h', y: -0.2 },
+            };
+            Plotly.newPlot('trend-chart', traces, layout, { responsive: true });
+        },
+    };
+}
+</script>
 
 </body>
 </html>

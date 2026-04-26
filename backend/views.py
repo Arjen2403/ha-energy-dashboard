@@ -115,3 +115,78 @@ def query_hourly_flows(conn, from_ts: int, to_ts: int):
         V_HOURLY_ENERGY_FLOWS, {"from_ts": from_ts, "to_ts": to_ts}
     ).fetchall()
     return [dict(r) for r in rows]
+
+# v_hourly_costs
+#
+# Per uur (UTC): kWh import, kWh export, en de spot-prijs. Cost-berekening
+# zelf gebeurt in Python (pricing.py) — view levert alleen de bouwstenen.
+# Reden: BTW/energiebelasting kunnen midyear wijzigen, en we willen één plek
+# waar die formules staan.
+
+V_HOURLY_COSTS = """
+WITH RECURSIVE
+spine(hour) AS (
+    SELECT :from_ts
+    UNION ALL
+    SELECT hour + 3600 FROM spine WHERE hour + 3600 <= :to_ts
+),
+
+deltas AS (
+    SELECT
+        sm.statistic_id,
+        s.start_ts AS hour,
+        s.sum - LAG(s.sum) OVER (
+            PARTITION BY s.metadata_id ORDER BY s.start_ts
+        ) AS delta
+    FROM statistics s
+    JOIN statistics_meta sm ON sm.id = s.metadata_id
+    WHERE sm.statistic_id IN (
+        'sensor.p1_meter_energy_import_tariff_1',
+        'sensor.p1_meter_energy_import_tariff_2',
+        'sensor.p1_meter_energy_export_tariff_1',
+        'sensor.p1_meter_energy_export_tariff_2'
+    )
+      AND s.start_ts >= :from_ts - 3600
+      AND s.start_ts <= :to_ts
+),
+
+flows AS (
+    SELECT
+        d.hour,
+        SUM(CASE WHEN d.statistic_id LIKE '%import%' THEN d.delta END) AS import_kwh,
+        SUM(CASE WHEN d.statistic_id LIKE '%export%' THEN d.delta END) AS export_kwh
+    FROM deltas d
+    WHERE d.hour >= :from_ts
+    GROUP BY d.hour
+),
+
+prices AS (
+    SELECT s.start_ts AS hour, s.mean AS spot_price
+    FROM statistics s
+    JOIN statistics_meta sm ON sm.id = s.metadata_id
+    WHERE sm.statistic_id = 'sensor.nord_pool_nl_current_price'
+      AND s.start_ts >= :from_ts
+      AND s.start_ts <= :to_ts
+)
+
+SELECT
+    spine.hour AS hour_ts,
+    f.import_kwh,
+    f.export_kwh,
+    p.spot_price
+FROM spine
+LEFT JOIN flows f ON f.hour = spine.hour
+LEFT JOIN prices p ON p.hour = spine.hour
+ORDER BY spine.hour
+"""
+
+
+def query_hourly_costs(conn, from_ts: int, to_ts: int):
+    """Voer v_hourly_costs uit en retourneer een lijst dicts.
+
+    from_ts en to_ts zijn unix epoch seconds (UTC), uur-aligned.
+    """
+    rows = conn.execute(
+        V_HOURLY_COSTS, {"from_ts": from_ts, "to_ts": to_ts}
+    ).fetchall()
+    return [dict(r) for r in rows]
