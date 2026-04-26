@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Energy Flows — HA Dashboard</title>
+    <!-- Tailwind voor styling, Plotly voor charts, Alpine voor reactivity -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.13.0/dist/cdn.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-900">
+
+<!-- Navigatie -->
+<nav class="bg-white shadow px-6 py-3 flex gap-6 mb-6">
+    <span class="font-bold text-blue-600">HA Energy Dashboard</span>
+    <a href="/now.html" class="text-gray-500 hover:text-blue-600">Now</a>
+    <a href="/flows.html" class="text-blue-600 font-semibold">Energy Flows</a>
+    <a href="/costs.html" class="text-gray-500 hover:text-blue-600">Costs</a>
+</nav>
+
+<!-- De Alpine x-data koppelt deze div aan de flowsApp() functie onderaan.
+     x-init zorgt dat load() draait zodra de pagina klaar is met inladen. -->
+<div class="max-w-6xl mx-auto px-6" x-data="flowsApp()" x-init="load()">
+
+    <h1 class="text-2xl font-bold mb-4">Energy Flows</h1>
+
+    <!-- Range-selector. Knoppen zijn template-loop; klik triggert setRange(). -->
+    <div class="mb-6 flex gap-2 flex-wrap">
+        <template x-for="r in ranges" :key="r.value">
+            <button
+                @click="setRange(r.value)"
+                :class="range === r.value
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white text-gray-700 hover:bg-gray-100'"
+                class="px-4 py-2 rounded border border-gray-300 transition">
+                <span x-text="r.label"></span>
+            </button>
+        </template>
+    </div>
+
+    <!-- Loading-staat: alleen zichtbaar tijdens fetch. -->
+    <div x-show="loading" class="bg-white p-6 rounded shadow text-gray-500">
+        Laden...
+    </div>
+
+    <!-- Error-staat: zichtbaar als er een fout was. -->
+    <div x-show="error" class="bg-red-50 border border-red-200 text-red-700 p-4 rounded mb-4"
+         x-text="error"></div>
+
+    <!-- Chart-container. Plotly tekent erin via id 'flows-chart'. -->
+    <div x-show="!loading && !error" class="bg-white p-4 rounded shadow mb-6">
+        <div id="flows-chart" class="h-96"></div>
+    </div>
+
+    <!-- Totalen-kaarten met aggregaten over de range. -->
+    <div x-show="!loading && !error" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Grid import</div>
+            <div class="text-xl font-semibold" x-text="totals.import_.toFixed(1) + ' kWh'"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Grid export</div>
+            <div class="text-xl font-semibold" x-text="totals.export_.toFixed(1) + ' kWh'"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">PV-productie</div>
+            <div class="text-xl font-semibold" x-text="totals.pv.toFixed(1) + ' kWh'"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Warmtepomp</div>
+            <div class="text-xl font-semibold" x-text="totals.hp.toFixed(1) + ' kWh'"></div>
+        </div>
+    </div>
+
+</div>
+
+<script>
+// flowsApp() retourneert het Alpine-component. Alle state en methodes zitten hier.
+function flowsApp() {
+    return {
+        // State
+        range: '7d',
+        ranges: [
+            { value: 'today', label: 'Vandaag' },
+            { value: '7d', label: '7 dagen' },
+            { value: '30d', label: '30 dagen' },
+            { value: 'ytd', label: 'YTD' },
+        ],
+        loading: false,
+        error: null,
+        rows: [],
+        // 'import' en 'export' zijn JavaScript reserved words in strict mode,
+        // vandaar de underscore-suffix.
+        totals: { import_: 0, export_: 0, pv: 0, hp: 0 },
+
+        // Methodes
+        async setRange(r) {
+            this.range = r;
+            await this.load();
+        },
+
+        async load() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const res = await fetch(`/api/flows?range=${this.range}`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                this.rows = data.rows;
+                this.computeTotals();
+                // Wacht tot Alpine de DOM heeft bijgewerkt voordat Plotly tekent.
+                this.$nextTick(() => this.draw());
+            } catch (e) {
+                this.error = `Fout bij laden: ${e.message}`;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        computeTotals() {
+            const t = { import_: 0, export_: 0, pv: 0, hp: 0 };
+            for (const r of this.rows) {
+                t.import_ += r.import_kwh || 0;
+                t.export_ += r.export_kwh || 0;
+                t.pv += r.pv_kwh || 0;
+                t.hp += r.heatpump_kwh || 0;
+            }
+            this.totals = t;
+        },
+
+        draw() {
+            // Aggregeer uur-data naar dagen in NL-tijdzone.
+            // Intl.DateTimeFormat met sv-SE locale geeft YYYY-MM-DD output.
+            const fmt = new Intl.DateTimeFormat('sv-SE', {
+                timeZone: 'Europe/Amsterdam',
+                year: 'numeric', month: '2-digit', day: '2-digit',
+            });
+
+            const byDay = {};
+            for (const r of this.rows) {
+                const day = fmt.format(new Date(r.hour));
+                if (!byDay[day]) byDay[day] = { import_: 0, export_: 0, pv: 0 };
+                byDay[day].import_ += r.import_kwh || 0;
+                byDay[day].export_ += r.export_kwh || 0;
+                byDay[day].pv += r.pv_kwh || 0;
+            }
+
+            const days = Object.keys(byDay).sort();
+            const importVals = days.map(d => byDay[d].import_);
+            const exportVals = days.map(d => -byDay[d].export_);  // negatief = onder nul
+            const pvVals = days.map(d => byDay[d].pv);
+
+            const traces = [
+                {
+                    type: 'bar', name: 'PV-productie', x: days, y: pvVals,
+                    marker: { color: '#facc15' },  // geel
+                },
+                {
+                    type: 'bar', name: 'Grid import', x: days, y: importVals,
+                    marker: { color: '#3b82f6' },  // blauw
+                },
+                {
+                    type: 'bar', name: 'Grid export', x: days, y: exportVals,
+                    marker: { color: '#22c55e' },  // groen
+                },
+            ];
+
+            const layout = {
+                barmode: 'relative',  // import boven nul, export onder nul
+                xaxis: { title: 'Datum' },
+                yaxis: { title: 'kWh', zeroline: true, zerolinewidth: 2 },
+                margin: { t: 20, l: 50, r: 20, b: 60 },
+                legend: { orientation: 'h', y: -0.2 },
+            };
+
+            Plotly.newPlot('flows-chart', traces, layout, { responsive: true });
+        },
+    };
+}
+</script>
+
+</body>
+</html>
