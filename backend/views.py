@@ -180,7 +180,6 @@ LEFT JOIN prices p ON p.hour = spine.hour
 ORDER BY spine.hour
 """
 
-
 def query_hourly_costs(conn, from_ts: int, to_ts: int):
     """Voer v_hourly_costs uit en retourneer een lijst dicts.
 
@@ -188,5 +187,117 @@ def query_hourly_costs(conn, from_ts: int, to_ts: int):
     """
     rows = conn.execute(
         V_HOURLY_COSTS, {"from_ts": from_ts, "to_ts": to_ts}
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+# v_hourly_heatpump
+#
+# Per uur (UTC): kWh consumption + supplied per categorie (totaal/heating/DHW),
+# uptime in minuten, en gemiddelde flow/return/outside temperaturen + compressor power.
+# COP-berekening doen we niet hier — pas op dag-aggregatie level (in Python),
+# want de Nefit/EMS-ESP rapport in hele kWh-resolutie wat ruisige uur-COP geeft.
+
+V_HOURLY_HEATPUMP = """
+WITH RECURSIVE
+spine(hour) AS (
+    SELECT :from_ts
+    UNION ALL
+    SELECT hour + 3600 FROM spine WHERE hour + 3600 <= :to_ts
+),
+
+deltas AS (
+    SELECT
+        sm.statistic_id,
+        s.start_ts AS hour,
+        s.sum - LAG(s.sum) OVER (
+            PARTITION BY s.metadata_id ORDER BY s.start_ts
+        ) AS delta
+    FROM statistics s
+    JOIN statistics_meta sm ON sm.id = s.metadata_id
+    WHERE sm.statistic_id IN (
+        'sensor.boiler_total_energy_consumption',
+        'sensor.boiler_total_energy_supplied',
+        'sensor.boiler_energy_consumption_compressor_heating',
+        'sensor.boiler_dhw_energy_consumption_compressor',
+        'sensor.boiler_total_energy_supplied_heating',
+        'sensor.boiler_dhw_total_energy_warm_supplied',
+        'sensor.boiler_heatpump_total_uptime'
+    )
+      AND s.start_ts >= :from_ts - 3600
+      AND s.start_ts <= :to_ts
+),
+
+flows AS (
+    SELECT
+        d.hour,
+        SUM(CASE WHEN d.statistic_id = 'sensor.boiler_total_energy_consumption'
+            THEN d.delta END) AS consumption_total_kwh,
+        SUM(CASE WHEN d.statistic_id = 'sensor.boiler_total_energy_supplied'
+            THEN d.delta END) AS supplied_total_kwh,
+        SUM(CASE WHEN d.statistic_id = 'sensor.boiler_energy_consumption_compressor_heating'
+            THEN d.delta END) AS consumption_heating_kwh,
+        SUM(CASE WHEN d.statistic_id = 'sensor.boiler_dhw_energy_consumption_compressor'
+            THEN d.delta END) AS consumption_dhw_kwh,
+        SUM(CASE WHEN d.statistic_id = 'sensor.boiler_total_energy_supplied_heating'
+            THEN d.delta END) AS supplied_heating_kwh,
+        SUM(CASE WHEN d.statistic_id = 'sensor.boiler_dhw_total_energy_warm_supplied'
+            THEN d.delta END) AS supplied_dhw_kwh,
+        SUM(CASE WHEN d.statistic_id = 'sensor.boiler_heatpump_total_uptime'
+            THEN d.delta END) AS uptime_min
+    FROM deltas d
+    WHERE d.hour >= :from_ts
+    GROUP BY d.hour
+),
+
+means AS (
+    SELECT
+        s.start_ts AS hour,
+        AVG(CASE WHEN sm.statistic_id = 'sensor.boiler_outside_temperature'
+            THEN s.mean END) AS outside_temp_c,
+        AVG(CASE WHEN sm.statistic_id = 'sensor.boiler_current_flow_temperature'
+            THEN s.mean END) AS flow_temp_c,
+        AVG(CASE WHEN sm.statistic_id = 'sensor.boiler_return_temperature'
+            THEN s.mean END) AS return_temp_c,
+        AVG(CASE WHEN sm.statistic_id = 'sensor.boiler_compressor_power_output'
+            THEN s.mean END) AS compressor_kw
+    FROM statistics s
+    JOIN statistics_meta sm ON sm.id = s.metadata_id
+    WHERE sm.statistic_id IN (
+        'sensor.boiler_outside_temperature',
+        'sensor.boiler_current_flow_temperature',
+        'sensor.boiler_return_temperature',
+        'sensor.boiler_compressor_power_output'
+    )
+      AND s.start_ts >= :from_ts
+      AND s.start_ts <= :to_ts
+    GROUP BY s.start_ts
+)
+
+SELECT
+    spine.hour AS hour_ts,
+    f.consumption_total_kwh,
+    f.supplied_total_kwh,
+    f.consumption_heating_kwh,
+    f.consumption_dhw_kwh,
+    f.supplied_heating_kwh,
+    f.supplied_dhw_kwh,
+    f.uptime_min,
+    m.outside_temp_c,
+    m.flow_temp_c,
+    m.return_temp_c,
+    m.compressor_kw
+FROM spine
+LEFT JOIN flows f ON f.hour = spine.hour
+LEFT JOIN means m ON m.hour = spine.hour
+ORDER BY spine.hour
+"""
+
+def query_hourly_heatpump(conn, from_ts: int, to_ts: int):
+    """Voer v_hourly_heatpump uit en retourneer een lijst dicts.
+
+    from_ts en to_ts zijn unix epoch seconds (UTC), uur-aligned.
+    """
+    rows = conn.execute(
+        V_HOURLY_HEATPUMP, {"from_ts": from_ts, "to_ts": to_ts}
     ).fetchall()
     return [dict(r) for r in rows]

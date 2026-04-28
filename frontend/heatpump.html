@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Heat Pump — HA Energy Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.13.0/dist/cdn.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-900">
+
+<nav class="bg-white shadow px-6 py-3 flex gap-6 mb-6">
+    <span class="font-bold text-blue-600">HA Energy Dashboard</span>
+    <a href="/now.html" class="text-gray-500 hover:text-blue-600">Now</a>
+    <a href="/flows.html" class="text-gray-500 hover:text-blue-600">Energy Flows</a>
+    <a href="/costs.html" class="text-gray-500 hover:text-blue-600">Costs</a>
+    <a href="/heatpump.html" class="text-blue-600 font-semibold">Heat Pump</a>
+    <a href="/solar.html" class="text-gray-500 hover:text-blue-600">Solar</a>
+</nav>
+
+<div class="max-w-6xl mx-auto px-6" x-data="hpApp()" x-init="load()">
+
+    <h1 class="text-2xl font-bold mb-4">Heat Pump</h1>
+
+    <!-- Range selector -->
+    <div class="mb-6 flex gap-2 flex-wrap">
+        <template x-for="r in ranges" :key="r.value">
+            <button
+                @click="setRange(r.value)"
+                :class="range === r.value
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white text-gray-700 hover:bg-gray-100'"
+                class="px-4 py-2 rounded border border-gray-300 transition">
+                <span x-text="r.label"></span>
+            </button>
+        </template>
+    </div>
+
+    <div x-show="loading" class="bg-white p-6 rounded shadow text-gray-500">Laden...</div>
+    <div x-show="error" class="bg-red-50 border border-red-200 text-red-700 p-4 rounded mb-4"
+         x-text="error"></div>
+
+    <!-- KPI cards -->
+    <div x-show="!loading && days.length > 0"
+         class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Verbruikt</div>
+            <div class="text-xl font-semibold" x-text="totals.consumption.toFixed(1) + ' kWh'"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Warmte uit</div>
+            <div class="text-xl font-semibold" x-text="totals.supplied.toFixed(1) + ' kWh'"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">COP gem. (range)</div>
+            <div class="text-xl font-semibold text-red-600" x-text="totals.cop ? totals.cop.toFixed(2) : '–'"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Buiten gem.</div>
+            <div class="text-xl font-semibold" x-text="totals.outside !== null ? totals.outside.toFixed(1) + ' °C' : '–'"></div>
+        </div>
+    </div>
+
+    <!-- Chart 1: COP-trends -->
+    <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm text-gray-500 mb-2">Daily COP — totaal, heating, DHW (lijn) + buitentemp (rechteras)</h2>
+        <div id="cop-trends-chart" class="h-72"></div>
+    </div>
+
+    <!-- Chart 2: COP vs buitentemp scatter -->
+    <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm text-gray-500 mb-2">COP totaal vs gemiddelde buitentemperatuur (1 punt per dag)</h2>
+        <div id="cop-vs-temp-chart" class="h-72"></div>
+    </div>
+
+    <!-- Chart 3: Heating vs DHW consumption -->
+    <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm text-gray-500 mb-2">Verbruik per dag — heating vs DHW (gestapeld)</h2>
+        <div id="heating-dhw-chart" class="h-72"></div>
+    </div>
+
+    <!-- Chart 4: Flow/return/outside temperatures -->
+    <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm text-gray-500 mb-2">Gemiddelde temperaturen per dag — flow / return / buiten</h2>
+        <div id="temps-chart" class="h-72"></div>
+    </div>
+
+    <!-- Detail table -->
+    <div x-show="!loading && days.length > 0" class="bg-white rounded shadow overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-50 text-gray-700">
+                <tr>
+                    <th class="text-left px-4 py-2">Datum</th>
+                    <th class="text-right px-4 py-2">Cons.</th>
+                    <th class="text-right px-4 py-2">Supp.</th>
+                    <th class="text-right px-4 py-2">COP</th>
+                    <th class="text-right px-4 py-2">COP heat</th>
+                    <th class="text-right px-4 py-2">COP DHW</th>
+                    <th class="text-right px-4 py-2">Buiten</th>
+                    <th class="text-right px-4 py-2">Flow</th>
+                    <th class="text-right px-4 py-2">Return</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="d in days" :key="d.date">
+                    <tr class="border-t hover:bg-gray-50">
+                        <td class="px-4 py-2" x-text="d.date"></td>
+                        <td class="px-4 py-2 text-right" x-text="d.consumption_total_kwh.toFixed(1)"></td>
+                        <td class="px-4 py-2 text-right" x-text="d.supplied_total_kwh.toFixed(1)"></td>
+                        <td class="px-4 py-2 text-right text-red-600 font-semibold"
+                            x-text="d.cop_total !== null ? d.cop_total.toFixed(2) : '–'"></td>
+                        <td class="px-4 py-2 text-right" x-text="d.cop_heating !== null ? d.cop_heating.toFixed(2) : '–'"></td>
+                        <td class="px-4 py-2 text-right" x-text="d.cop_dhw !== null ? d.cop_dhw.toFixed(2) : '–'"></td>
+                        <td class="px-4 py-2 text-right" x-text="d.avg_outside_temp_c !== null ? d.avg_outside_temp_c.toFixed(1) + '°' : '–'"></td>
+                        <td class="px-4 py-2 text-right" x-text="d.avg_flow_temp_c !== null ? d.avg_flow_temp_c.toFixed(1) + '°' : '–'"></td>
+                        <td class="px-4 py-2 text-right" x-text="d.avg_return_temp_c !== null ? d.avg_return_temp_c.toFixed(1) + '°' : '–'"></td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+
+</div>
+
+<script>
+function hpApp() {
+    return {
+        range: '7d',
+        ranges: [
+            { value: 'today', label: 'Vandaag' },
+            { value: '7d', label: '7 dagen' },
+            { value: '30d', label: '30 dagen' },
+            { value: 'ytd', label: 'YTD' },
+        ],
+        loading: false,
+        error: null,
+        days: [],
+        totals: { consumption: 0, supplied: 0, cop: null, outside: null },
+
+        async setRange(r) {
+            this.range = r;
+            await this.load();
+        },
+
+        async load() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const res = await fetch(`/api/heatpump?range=${this.range}`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                this.days = data.days;
+                this.computeTotals();
+                this.$nextTick(() => this.draw());
+            } catch (e) {
+                this.error = `Fout bij laden: ${e.message}`;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        computeTotals() {
+            let cons = 0, supp = 0;
+            const outsides = [];
+            for (const d of this.days) {
+                cons += d.consumption_total_kwh;
+                supp += d.supplied_total_kwh;
+                if (d.avg_outside_temp_c !== null) outsides.push(d.avg_outside_temp_c);
+            }
+            this.totals = {
+                consumption: cons,
+                supplied: supp,
+                cop: cons > 0 ? supp / cons : null,
+                outside: outsides.length ? outsides.reduce((a,b)=>a+b,0) / outsides.length : null,
+            };
+        },
+
+        draw() {
+            if (this.days.length === 0) return;
+            const dates = this.days.map(d => d.date);
+
+            // Chart 1: COP trends
+            Plotly.newPlot('cop-trends-chart', [
+                {type:'scatter', mode:'lines+markers', name:'COP totaal',
+                 x:dates, y:this.days.map(d=>d.cop_total),
+                 line:{color:'#dc2626', width:2}, yaxis:'y'},
+                {type:'scatter', mode:'lines+markers', name:'COP heating',
+                 x:dates, y:this.days.map(d=>d.cop_heating),
+                 line:{color:'#3b82f6', dash:'dash'}, yaxis:'y'},
+                {type:'scatter', mode:'lines+markers', name:'COP DHW',
+                 x:dates, y:this.days.map(d=>d.cop_dhw),
+                 line:{color:'#8b5cf6', dash:'dot'}, yaxis:'y'},
+                {type:'scatter', mode:'lines', name:'Buitentemp',
+                 x:dates, y:this.days.map(d=>d.avg_outside_temp_c),
+                 line:{color:'#9ca3af', width:1}, yaxis:'y2'},
+            ], {
+                yaxis: {title:'COP', side:'left'},
+                yaxis2: {title:'°C', side:'right', overlaying:'y'},
+                margin:{t:10, l:50, r:50, b:40},
+                legend:{orientation:'h', y:-0.2},
+            }, {responsive:true});
+
+            // Chart 2: COP vs outside temp scatter
+            Plotly.newPlot('cop-vs-temp-chart', [{
+                type:'scatter', mode:'markers', name:'COP totaal',
+                x:this.days.map(d=>d.avg_outside_temp_c),
+                y:this.days.map(d=>d.cop_total),
+                marker:{color:'#dc2626', size:10},
+                text:dates,
+                hovertemplate:'%{text}<br>Buiten: %{x}°C<br>COP: %{y}<extra></extra>',
+            }], {
+                xaxis:{title:'Buitentemperatuur (°C)'},
+                yaxis:{title:'COP totaal'},
+                margin:{t:10, l:50, r:20, b:40},
+            }, {responsive:true});
+
+            // Chart 3: Heating vs DHW consumption stacked bar
+            Plotly.newPlot('heating-dhw-chart', [
+                {type:'bar', name:'Heating',
+                 x:dates, y:this.days.map(d=>d.consumption_heating_kwh),
+                 marker:{color:'#3b82f6'}},
+                {type:'bar', name:'DHW',
+                 x:dates, y:this.days.map(d=>d.consumption_dhw_kwh),
+                 marker:{color:'#8b5cf6'}},
+            ], {
+                barmode:'stack',
+                xaxis:{title:'Datum'},
+                yaxis:{title:'kWh verbruikt'},
+                margin:{t:10, l:50, r:20, b:40},
+                legend:{orientation:'h', y:-0.2},
+            }, {responsive:true});
+
+            // Chart 4: Temperatures
+            Plotly.newPlot('temps-chart', [
+                {type:'scatter', mode:'lines+markers', name:'Flow',
+                 x:dates, y:this.days.map(d=>d.avg_flow_temp_c),
+                 line:{color:'#dc2626'}},
+                {type:'scatter', mode:'lines+markers', name:'Return',
+                 x:dates, y:this.days.map(d=>d.avg_return_temp_c),
+                 line:{color:'#3b82f6'}},
+                {type:'scatter', mode:'lines+markers', name:'Buiten',
+                 x:dates, y:this.days.map(d=>d.avg_outside_temp_c),
+                 line:{color:'#9ca3af', dash:'dash'}},
+            ], {
+                yaxis:{title:'°C'},
+                margin:{t:10, l:50, r:20, b:40},
+                legend:{orientation:'h', y:-0.2},
+            }, {responsive:true});
+        },
+    };
+}
+</script>
+
+</body>
+</html>
