@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strategie — HA Energy Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.13.0/dist/cdn.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-900">
+
+<nav class="bg-white shadow px-6 py-3 flex gap-6 mb-6 flex-wrap">
+    <span class="font-bold text-blue-600">HA Energy Dashboard</span>
+    <a href="/now.html" class="text-gray-500 hover:text-blue-600">Now</a>
+    <a href="/flows.html" class="text-gray-500 hover:text-blue-600">Energy Flows</a>
+    <a href="/costs.html" class="text-gray-500 hover:text-blue-600">Costs</a>
+    <a href="/heatpump.html" class="text-gray-500 hover:text-blue-600">Heat Pump</a>
+    <a href="/solar.html" class="text-gray-500 hover:text-blue-600">Solar</a>
+    <a href="/strategy.html" class="text-blue-600 font-semibold">Strategie</a>
+</nav>
+
+<div class="max-w-6xl mx-auto px-6" x-data="strategyApp()" x-init="load()">
+
+    <h1 class="text-2xl font-bold mb-2">Strategie — wat na 2027?</h1>
+    <p class="text-sm text-gray-600 mb-6 max-w-3xl">
+        Vergelijkt vier scenario's op je werkelijke historische data:
+        huidig (saldering 1:1) als referentie, raw na-2027 (geen saldering),
+        post-2027 met PV-curtailment bij negatieve spot, en post-2027 met
+        een batterij. Vaste kosten/dag (-€0,19) zitten in alle scenario's gelijk.
+    </p>
+
+    <!-- Range + battery selector -->
+    <div class="mb-6 flex gap-4 items-end flex-wrap">
+        <div>
+            <div class="text-sm text-gray-500 mb-1">Periode</div>
+            <div class="flex gap-2 flex-wrap">
+                <template x-for="r in ranges" :key="r.value">
+                    <button
+                        @click="setRange(r.value)"
+                        :class="range === r.value
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-white text-gray-700 hover:bg-gray-100'"
+                        class="px-4 py-2 rounded border border-gray-300 transition">
+                        <span x-text="r.label"></span>
+                    </button>
+                </template>
+            </div>
+        </div>
+        <div>
+            <label class="text-sm text-gray-500 mb-1 block">Batterij grootte (kWh)</label>
+            <div class="flex gap-2 items-center">
+                <input type="number" min="0" max="100" step="5"
+                    x-model.number="batteryKwh"
+                    @change="load()"
+                    class="px-3 py-2 border border-gray-300 rounded w-24 text-right">
+                <span class="text-sm text-gray-500">kWh</span>
+            </div>
+        </div>
+    </div>
+
+    <div x-show="loading" class="bg-white p-6 rounded shadow text-gray-500">Laden...</div>
+    <div x-show="error" class="bg-red-50 border border-red-200 text-red-700 p-4 rounded mb-4"
+         x-text="error"></div>
+
+    <!-- Highlight banner -->
+    <div x-show="!loading && scenarios.length > 0"
+         class="bg-amber-50 border-l-4 border-amber-500 text-amber-900 p-4 rounded mb-6">
+        <div class="text-sm uppercase tracking-wide font-semibold">Saldering-pijn na 2027</div>
+        <div class="text-2xl font-bold mt-1">
+            <span x-text="formatEur(saldoPain)"></span> over <span x-text="dayCount"></span> dagen
+        </div>
+        <div class="text-sm mt-1">
+            (verschil tussen "huidig met saldering" en "na 2027 zonder mitigatie")
+        </div>
+    </div>
+
+    <!-- 4 scenario cards -->
+    <div x-show="!loading && scenarios.length > 0" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <template x-for="s in scenarios" :key="s.id">
+            <div :class="cardClass(s)" class="p-4 rounded shadow border-l-4">
+                <div class="text-xs uppercase tracking-wide text-gray-500" x-text="s.label"></div>
+                <div class="text-2xl font-bold mt-1" x-text="formatEur(s.total_eur)"></div>
+                <div x-show="s.id !== 'no_saldering'"
+                     class="text-sm mt-1"
+                     :class="s.savings_vs_no_saldering_eur >= 0 ? 'text-green-600' : 'text-red-600'">
+                    <span x-text="(s.savings_vs_no_saldering_eur >= 0 ? '↓ ' : '↑ ') + formatEur(Math.abs(s.savings_vs_no_saldering_eur))"></span>
+                    vs na-2027
+                </div>
+                <div x-show="s.pv_curtailed_kwh !== null && s.pv_curtailed_kwh !== undefined"
+                     class="text-xs text-gray-500 mt-2">
+                    PV weggegooid: <span x-text="s.pv_curtailed_kwh ? s.pv_curtailed_kwh.toFixed(1) : '0'"></span> kWh
+                </div>
+                <div x-show="s.battery_max_soc_kwh !== null && s.battery_max_soc_kwh !== undefined"
+                     class="text-xs text-gray-500 mt-2">
+                    Max SOC: <span x-text="s.battery_max_soc_kwh ? s.battery_max_soc_kwh.toFixed(1) : '0'"></span> kWh<br>
+                    Import: <span x-text="s.total_import_kwh.toFixed(1)"></span> kWh ·
+                    Export: <span x-text="s.total_export_kwh.toFixed(1)"></span> kWh
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <!-- Daily chart -->
+    <div x-show="!loading && daily.length > 0" class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm text-gray-500 mb-2">Daily cost per scenario</h2>
+        <div id="daily-chart" class="h-96"></div>
+    </div>
+
+    <!-- Detail table -->
+    <div x-show="!loading && daily.length > 0" class="bg-white rounded shadow overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-50 text-gray-700">
+                <tr>
+                    <th class="text-left px-4 py-2">Datum</th>
+                    <th class="text-right px-4 py-2">Huidig</th>
+                    <th class="text-right px-4 py-2">Na 2027</th>
+                    <th class="text-right px-4 py-2">+ Curtailment</th>
+                    <th class="text-right px-4 py-2">+ Batterij</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="d in daily" :key="d.date">
+                    <tr class="border-t hover:bg-gray-50">
+                        <td class="px-4 py-2" x-text="d.date"></td>
+                        <td class="px-4 py-2 text-right" :class="d.current_eur >= 0 ? 'text-red-600' : 'text-green-600'"
+                            x-text="formatEur(d.current_eur)"></td>
+                        <td class="px-4 py-2 text-right font-semibold" :class="d.no_saldering_eur >= 0 ? 'text-red-600' : 'text-green-600'"
+                            x-text="formatEur(d.no_saldering_eur)"></td>
+                        <td class="px-4 py-2 text-right" :class="d.curtailment_eur >= 0 ? 'text-red-600' : 'text-green-600'"
+                            x-text="formatEur(d.curtailment_eur)"></td>
+                        <td class="px-4 py-2 text-right" :class="d.battery_eur >= 0 ? 'text-red-600' : 'text-green-600'"
+                            x-text="formatEur(d.battery_eur)"></td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+
+</div>
+
+<script>
+function strategyApp() {
+    return {
+        range: '7d',
+        ranges: [
+            { value: 'today', label: 'Vandaag' },
+            { value: '7d', label: '7 dagen' },
+            { value: '30d', label: '30 dagen' },
+            { value: 'ytd', label: 'YTD' },
+        ],
+        batteryKwh: 20,
+        loading: false,
+        error: null,
+        scenarios: [],
+        daily: [],
+        dayCount: 0,
+        saldoPain: 0,
+
+        async setRange(r) {
+            this.range = r;
+            await this.load();
+        },
+
+        async load() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const res = await fetch(`/api/strategy?range=${this.range}&battery_kwh=${this.batteryKwh}`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                this.scenarios = data.scenarios;
+                this.daily = data.daily;
+                this.dayCount = data.day_count;
+                const current = this.scenarios.find(s => s.id === 'current');
+                const noSald = this.scenarios.find(s => s.id === 'no_saldering');
+                this.saldoPain = noSald && current ? noSald.total_eur - current.total_eur : 0;
+                this.$nextTick(() => this.draw());
+            } catch (e) {
+                this.error = `Fout bij laden: ${e.message}`;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        formatEur(v) {
+            if (v === null || v === undefined) return '–';
+            const sign = v >= 0 ? '' : '−';
+            return sign + '€ ' + Math.abs(v).toFixed(2);
+        },
+
+        cardClass(s) {
+            // Border + background tint per scenario
+            switch (s.id) {
+                case 'current': return 'bg-white border-gray-400';
+                case 'no_saldering': return 'bg-red-50 border-red-500';
+                case 'curtailment': return 'bg-amber-50 border-amber-500';
+                case 'battery': return 'bg-green-50 border-green-500';
+                default: return 'bg-white';
+            }
+        },
+
+        draw() {
+            const dates = this.daily.map(d => d.date);
+            const colors = {
+                current: '#6b7280',
+                no_saldering: '#dc2626',
+                curtailment: '#f59e0b',
+                battery: '#22c55e',
+            };
+            const traces = [
+                { type:'bar', name:'Huidig', x:dates, y:this.daily.map(d=>d.current_eur),
+                  marker:{color: colors.current} },
+                { type:'bar', name:'Na 2027', x:dates, y:this.daily.map(d=>d.no_saldering_eur),
+                  marker:{color: colors.no_saldering} },
+                { type:'bar', name:'+ Curtailment', x:dates, y:this.daily.map(d=>d.curtailment_eur),
+                  marker:{color: colors.curtailment} },
+                { type:'bar', name:'+ Batterij', x:dates, y:this.daily.map(d=>d.battery_eur),
+                  marker:{color: colors.battery} },
+            ];
+            const layout = {
+                barmode: 'group',
+                xaxis: { title: 'Datum' },
+                yaxis: { title: '€', zeroline: true, zerolinewidth: 2 },
+                margin: { t: 20, l: 60, r: 20, b: 60 },
+                legend: { orientation: 'h', y: -0.2 },
+            };
+            Plotly.newPlot('daily-chart', traces, layout, { responsive: true });
+        },
+    };
+}
+</script>
+
+</body>
+</html>

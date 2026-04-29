@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Solar — HA Energy Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.13.0/dist/cdn.min.js"></script>
 </head>
 <body class="bg-gray-50 text-gray-900">
 
@@ -15,14 +17,232 @@
     <a href="/costs.html" class="text-gray-500 hover:text-blue-600">Costs</a>
     <a href="/heatpump.html" class="text-gray-500 hover:text-blue-600">Heat Pump</a>
     <a href="/solar.html" class="text-blue-600 font-semibold">Solar</a>
+    <a href="/strategy.html" class="text-gray-500 hover:text-blue-600">Strategie</a>
 </nav>
 
-<div class="max-w-6xl mx-auto px-6">
+<div class="max-w-6xl mx-auto px-6" x-data="solarApp()" x-init="load()">
+
     <h1 class="text-2xl font-bold mb-4">Solar</h1>
-    <div class="bg-white p-6 rounded shadow text-gray-500">
-        Zonne-productie en self-consumption — komt in sessie 2c.
+
+    <!-- Range selector -->
+    <div class="mb-6 flex gap-2 flex-wrap">
+        <template x-for="r in ranges" :key="r.value">
+            <button
+                @click="setRange(r.value)"
+                :class="range === r.value
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-white text-gray-700 hover:bg-gray-100'"
+                class="px-4 py-2 rounded border border-gray-300 transition">
+                <span x-text="r.label"></span>
+            </button>
+        </template>
     </div>
+
+    <div x-show="loading" class="bg-white p-6 rounded shadow text-gray-500">Laden...</div>
+    <div x-show="error" class="bg-red-50 border border-red-200 text-red-700 p-4 rounded mb-4"
+         x-text="error"></div>
+
+    <!-- KPI cards -->
+    <div x-show="!loading && days.length > 0"
+         class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Totale productie</div>
+            <div class="text-xl font-semibold text-yellow-600"
+                 x-text="totals.pv.toFixed(1) + ' kWh'"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Self-consumed</div>
+            <div class="text-xl font-semibold"
+                 x-text="totals.selfConsumed.toFixed(1) + ' kWh'"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Teruggeleverd</div>
+            <div class="text-xl font-semibold"
+                 x-text="totals.exported.toFixed(1) + ' kWh'"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Self-consumption ratio</div>
+            <div class="text-xl font-semibold"
+                 x-text="totals.ratio !== null ? (totals.ratio * 100).toFixed(0) + '%' : '–'"></div>
+        </div>
+    </div>
+
+    <!-- Chart 1: Dagopbrengst -->
+    <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm text-gray-500 mb-2">Dagopbrengst (kWh per dag)</h2>
+        <div id="daily-yield-chart" class="h-72"></div>
+    </div>
+
+    <!-- Chart 2: Day-curve -->
+    <div x-show="!loading && dayCurve.length > 0" class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm text-gray-500 mb-2">Day-curve — gemiddeld vermogen per uur-van-dag (NL)</h2>
+        <div id="day-curve-chart" class="h-72"></div>
+    </div>
+
+    <!-- Chart 3: Self-consumption matrix -->
+    <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm text-gray-500 mb-2">Self-consumption matrix — direct verbruikt vs teruggeleverd</h2>
+        <div id="self-consumption-chart" class="h-72"></div>
+    </div>
+
+    <!-- Chart 4: Inverter temperatuur -->
+    <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm text-gray-500 mb-2">Inverter-temperatuur (gemiddelde per dag)</h2>
+        <div id="inverter-temp-chart" class="h-72"></div>
+    </div>
+
+    <!-- Detail table -->
+    <div x-show="!loading && days.length > 0" class="bg-white rounded shadow overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-50 text-gray-700">
+                <tr>
+                    <th class="text-left px-4 py-2">Datum</th>
+                    <th class="text-right px-4 py-2">PV kWh</th>
+                    <th class="text-right px-4 py-2">Peak W</th>
+                    <th class="text-right px-4 py-2">Self-cons.</th>
+                    <th class="text-right px-4 py-2">Export</th>
+                    <th class="text-right px-4 py-2">Ratio</th>
+                    <th class="text-right px-4 py-2">Inverter °C</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="d in days" :key="d.date">
+                    <tr class="border-t hover:bg-gray-50">
+                        <td class="px-4 py-2" x-text="d.date"></td>
+                        <td class="px-4 py-2 text-right text-yellow-600 font-semibold"
+                            x-text="d.pv_kwh.toFixed(2)"></td>
+                        <td class="px-4 py-2 text-right"
+                            x-text="d.peak_power_w !== null ? d.peak_power_w.toFixed(0) : '–'"></td>
+                        <td class="px-4 py-2 text-right" x-text="d.self_consumed_kwh.toFixed(2)"></td>
+                        <td class="px-4 py-2 text-right" x-text="d.exported_kwh.toFixed(2)"></td>
+                        <td class="px-4 py-2 text-right"
+                            x-text="d.self_consumption_ratio !== null ? (d.self_consumption_ratio * 100).toFixed(0) + '%' : '–'"></td>
+                        <td class="px-4 py-2 text-right"
+                            x-text="d.avg_inverter_temp_c !== null ? d.avg_inverter_temp_c.toFixed(1) + '°' : '–'"></td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+
 </div>
+
+<script>
+function solarApp() {
+    return {
+        range: '7d',
+        ranges: [
+            { value: 'today', label: 'Vandaag' },
+            { value: '7d', label: '7 dagen' },
+            { value: '30d', label: '30 dagen' },
+            { value: 'ytd', label: 'YTD' },
+        ],
+        loading: false,
+        error: null,
+        days: [],
+        dayCurve: [],
+        totals: { pv: 0, selfConsumed: 0, exported: 0, ratio: null },
+
+        async setRange(r) {
+            this.range = r;
+            await this.load();
+        },
+
+        async load() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const res = await fetch(`/api/solar?range=${this.range}`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                this.days = data.days;
+                this.dayCurve = data.day_curve;
+                this.computeTotals();
+                this.$nextTick(() => this.draw());
+            } catch (e) {
+                this.error = `Fout bij laden: ${e.message}`;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        computeTotals() {
+            let pv = 0, sc = 0, ex = 0;
+            for (const d of this.days) {
+                pv += d.pv_kwh;
+                sc += d.self_consumed_kwh;
+                ex += d.exported_kwh;
+            }
+            this.totals = {
+                pv, selfConsumed: sc, exported: ex,
+                ratio: pv > 0 ? sc / pv : null,
+            };
+        },
+
+        draw() {
+            const dates = this.days.map(d => d.date);
+
+            // Chart 1: Dagopbrengst
+            Plotly.newPlot('daily-yield-chart', [{
+                type: 'bar', name: 'PV-productie',
+                x: dates, y: this.days.map(d => d.pv_kwh),
+                marker: { color: '#facc15' },
+            }], {
+                xaxis: { title: 'Datum' },
+                yaxis: { title: 'kWh' },
+                margin: { t: 10, l: 50, r: 20, b: 40 },
+            }, { responsive: true });
+
+            // Chart 2: Day-curve
+            Plotly.newPlot('day-curve-chart', [{
+                type: 'scatter', mode: 'lines+markers', name: 'Gem. vermogen',
+                x: this.dayCurve.map(p => p.hour),
+                y: this.dayCurve.map(p => p.avg_pv_w),
+                line: { color: '#facc15', width: 2 },
+                marker: { color: '#facc15' },
+            }], {
+                xaxis: {
+                    title: 'Uur (NL local)',
+                    tickmode: 'linear', tick0: 0, dtick: 2,
+                    range: [0, 23],
+                },
+                yaxis: { title: 'W' },
+                margin: { t: 10, l: 60, r: 20, b: 40 },
+            }, { responsive: true });
+
+            // Chart 3: Self-consumption matrix
+            Plotly.newPlot('self-consumption-chart', [
+                {
+                    type: 'bar', name: 'Direct verbruikt',
+                    x: dates, y: this.days.map(d => d.self_consumed_kwh),
+                    marker: { color: '#22c55e' },
+                },
+                {
+                    type: 'bar', name: 'Teruggeleverd',
+                    x: dates, y: this.days.map(d => d.exported_kwh),
+                    marker: { color: '#3b82f6' },
+                },
+            ], {
+                barmode: 'stack',
+                xaxis: { title: 'Datum' },
+                yaxis: { title: 'kWh' },
+                margin: { t: 10, l: 50, r: 20, b: 40 },
+                legend: { orientation: 'h', y: -0.2 },
+            }, { responsive: true });
+
+            // Chart 4: Inverter temp
+            Plotly.newPlot('inverter-temp-chart', [{
+                type: 'scatter', mode: 'lines+markers', name: 'Inverter temp',
+                x: dates, y: this.days.map(d => d.avg_inverter_temp_c),
+                line: { color: '#dc2626', width: 2 },
+            }], {
+                yaxis: { title: '°C' },
+                margin: { t: 10, l: 50, r: 20, b: 40 },
+            }, { responsive: true });
+        },
+    };
+}
+</script>
 
 </body>
 </html>

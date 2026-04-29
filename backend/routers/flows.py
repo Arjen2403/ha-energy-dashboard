@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 from zoneinfo import ZoneInfo
 
+from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -10,6 +11,8 @@ from ..db import ha_db
 from ..views import query_hourly_flows
 
 router = APIRouter()
+
+_flows_cache: TTLCache = TTLCache(maxsize=16, ttl=300)
 
 NL_TZ = ZoneInfo("Europe/Amsterdam")
 
@@ -102,6 +105,11 @@ def get_flows(
     ),
 ):
     """Hourly energy flows: kWh import/export/pv/heatpump/sockets + spot price."""
+    cache_key = (range, from_, to)
+    cached = _flows_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     from_ts, to_ts = _resolve_range(range, from_, to)
 
     with ha_db() as conn:
@@ -122,10 +130,12 @@ def get_flows(
         for r in rows
     ]
 
-    return FlowsResponse(
+    response = FlowsResponse(
         range=range,
         from_ts=datetime.fromtimestamp(from_ts, tz=timezone.utc),
         to_ts=datetime.fromtimestamp(to_ts, tz=timezone.utc),
         row_count=len(flow_rows),
         rows=flow_rows,
     )
+    _flows_cache[cache_key] = response
+    return response

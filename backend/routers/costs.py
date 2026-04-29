@@ -1,15 +1,10 @@
-"""/api/costs — daily cost decomposition over een gekozen tijdrange.
-
-Aggregatie:
-- Per uur (UTC): variabele import-kosten + variabele export-credit (binnen saldering).
-- Per dag (NL local): som hourly + vaste kosten/dag (constant -0.18836 EUR netto).
-- Verzamel naar lijst van DailyCost rows.
-"""
+"""/api/costs — daily cost decomposition over een gekozen tijdrange."""
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Literal, Optional
 from zoneinfo import ZoneInfo
 
+from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -23,17 +18,19 @@ from ..views import query_hourly_costs
 
 router = APIRouter()
 
+_costs_cache: TTLCache = TTLCache(maxsize=16, ttl=300)
+
 NL_TZ = ZoneInfo("Europe/Amsterdam")
 
 
 class DailyCost(BaseModel):
-    date: str  # ISO date string YYYY-MM-DD in NL local time
+    date: str
     import_kwh: float
     export_kwh: float
-    variable_import_eur: float       # positief = we betalen
-    variable_export_eur: float       # negatief = credit binnen saldering
-    fixed_eur: float                 # constant -0.18836
-    net_eur: float                   # som van bovenstaande
+    variable_import_eur: float
+    variable_export_eur: float
+    fixed_eur: float
+    net_eur: float
     avg_import_price_eur_per_kwh: Optional[float] = None
     avg_export_price_eur_per_kwh: Optional[float] = None
 
@@ -52,7 +49,6 @@ def _floor_to_hour(ts: int) -> int:
 
 
 def _resolve_range(range_name: str, from_iso: Optional[str], to_iso: Optional[str]) -> tuple[int, int]:
-    """Zelfde range-logica als /api/flows (today/7d/30d/ytd/custom)."""
     from datetime import timedelta
     now = datetime.now(timezone.utc)
 
@@ -62,16 +58,13 @@ def _resolve_range(range_name: str, from_iso: Optional[str], to_iso: Optional[st
         from_dt = nl_midnight.astimezone(timezone.utc)
         to_dt = now
     elif range_name == "7d":
-        from_dt = now - timedelta(days=7)
-        to_dt = now
+        from_dt = now - timedelta(days=7); to_dt = now
     elif range_name == "30d":
-        from_dt = now - timedelta(days=30)
-        to_dt = now
+        from_dt = now - timedelta(days=30); to_dt = now
     elif range_name == "ytd":
         nl_now = now.astimezone(NL_TZ)
         nl_jan1 = nl_now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        from_dt = nl_jan1.astimezone(timezone.utc)
-        to_dt = now
+        from_dt = nl_jan1.astimezone(timezone.utc); to_dt = now
     elif range_name == "custom":
         if not (from_iso and to_iso):
             raise HTTPException(400, "Custom range requires both 'from' and 'to' (ISO 8601).")
@@ -98,25 +91,28 @@ def get_costs(
     to: Optional[str] = Query(None),
 ):
     """Daily cost decomposition over de gekozen range."""
+    cache_key = (range, from_, to)
+    cached = _costs_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     from_ts, to_ts = _resolve_range(range, from_, to)
 
     with ha_db() as conn:
         hourly_rows = query_hourly_costs(conn, from_ts, to_ts)
 
-    # Bucket hourly rows naar NL-lokale dagen
     daily_buckets: dict[str, dict] = defaultdict(lambda: {
         "import_kwh": 0.0,
         "export_kwh": 0.0,
         "variable_import_eur": 0.0,
         "variable_export_eur": 0.0,
-        "weighted_import_value": 0.0,  # voor avg price calculation
+        "weighted_import_value": 0.0,
         "weighted_export_value": 0.0,
     })
 
     for r in hourly_rows:
         spot = r["spot_price"]
         if spot is None:
-            # Geen prijs = kunnen geen kosten berekenen voor dit uur. Skip.
             continue
         i_kwh = r["import_kwh"] or 0.0
         e_kwh = r["export_kwh"] or 0.0
@@ -126,9 +122,8 @@ def get_costs(
         p_import = import_price(spot)
         p_export = export_price_within_saldo(spot)
         var_import = i_kwh * p_import
-        var_export = -e_kwh * p_export   # negatief = credit
+        var_export = -e_kwh * p_export
 
-        # Bucket date in NL local time
         hour_dt_utc = datetime.fromtimestamp(r["hour_ts"], tz=timezone.utc)
         hour_dt_nl = hour_dt_utc.astimezone(NL_TZ)
         day_key = hour_dt_nl.strftime("%Y-%m-%d")
@@ -145,12 +140,8 @@ def get_costs(
     for date_str in sorted(daily_buckets.keys()):
         b = daily_buckets[date_str]
         net = b["variable_import_eur"] + b["variable_export_eur"] + VASTE_KOSTEN_PER_DAG_NETTO
-        avg_import = (
-            b["weighted_import_value"] / b["import_kwh"] if b["import_kwh"] > 0 else None
-        )
-        avg_export = (
-            b["weighted_export_value"] / b["export_kwh"] if b["export_kwh"] > 0 else None
-        )
+        avg_import = b["weighted_import_value"] / b["import_kwh"] if b["import_kwh"] > 0 else None
+        avg_export = b["weighted_export_value"] / b["export_kwh"] if b["export_kwh"] > 0 else None
         days.append(DailyCost(
             date=date_str,
             import_kwh=round(b["import_kwh"], 3),
@@ -163,7 +154,7 @@ def get_costs(
             avg_export_price_eur_per_kwh=round(avg_export, 5) if avg_export else None,
         ))
 
-    return CostsResponse(
+    response = CostsResponse(
         range=range,
         from_ts=datetime.fromtimestamp(from_ts, tz=timezone.utc),
         to_ts=datetime.fromtimestamp(to_ts, tz=timezone.utc),
@@ -171,3 +162,5 @@ def get_costs(
         days=days,
         total_net_eur=round(sum(d.net_eur for d in days), 2),
     )
+    _costs_cache[cache_key] = response
+    return response

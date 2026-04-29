@@ -1,15 +1,10 @@
-"""/api/heatpump — daily heat pump performance over een gekozen tijdrange.
-
-Aggregatie:
-- Hourly view geeft kWh + mean temps per uur (UTC).
-- Bucketing naar NL-lokale dagen.
-- Per dag: sum kWh, mean temps, COPs (alleen waar denominator > 0).
-"""
+"""/api/heatpump — daily heat pump performance over een gekozen tijdrange."""
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 from zoneinfo import ZoneInfo
 
+from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -18,11 +13,13 @@ from ..views import query_hourly_heatpump
 
 router = APIRouter()
 
+_heatpump_cache: TTLCache = TTLCache(maxsize=16, ttl=300)
+
 NL_TZ = ZoneInfo("Europe/Amsterdam")
 
 
 class DailyHeatpump(BaseModel):
-    date: str  # YYYY-MM-DD in NL local time
+    date: str
     consumption_total_kwh: float
     supplied_total_kwh: float
     consumption_heating_kwh: float
@@ -60,16 +57,13 @@ def _resolve_range(range_name: str, from_iso: Optional[str], to_iso: Optional[st
         from_dt = nl_midnight.astimezone(timezone.utc)
         to_dt = now
     elif range_name == "7d":
-        from_dt = now - timedelta(days=7)
-        to_dt = now
+        from_dt = now - timedelta(days=7); to_dt = now
     elif range_name == "30d":
-        from_dt = now - timedelta(days=30)
-        to_dt = now
+        from_dt = now - timedelta(days=30); to_dt = now
     elif range_name == "ytd":
         nl_now = now.astimezone(NL_TZ)
         nl_jan1 = nl_now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        from_dt = nl_jan1.astimezone(timezone.utc)
-        to_dt = now
+        from_dt = nl_jan1.astimezone(timezone.utc); to_dt = now
     elif range_name == "custom":
         if not (from_iso and to_iso):
             raise HTTPException(400, "Custom range requires both 'from' and 'to'.")
@@ -96,6 +90,11 @@ def get_heatpump(
     to: Optional[str] = Query(None),
 ):
     """Daily heat pump aggregation: kWh per categorie + temperaturen + COPs."""
+    cache_key = (range, from_, to)
+    cached = _heatpump_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     from_ts, to_ts = _resolve_range(range, from_, to)
 
     with ha_db() as conn:
@@ -119,7 +118,6 @@ def get_heatpump(
         day_key = hour_dt_utc.astimezone(NL_TZ).strftime("%Y-%m-%d")
         b = daily[day_key]
 
-        # Sum kWh fields (treat NULL as 0)
         for k in ("consumption_total_kwh", "supplied_total_kwh",
                   "consumption_heating_kwh", "consumption_dhw_kwh",
                   "supplied_heating_kwh", "supplied_dhw_kwh", "uptime_min"):
@@ -127,7 +125,6 @@ def get_heatpump(
             if v is not None:
                 b[k] += v
 
-        # Collect mean values for averaging later
         if r.get("outside_temp_c") is not None:
             b["outside_temps"].append(r["outside_temp_c"])
         if r.get("flow_temp_c") is not None:
@@ -170,10 +167,12 @@ def get_heatpump(
                 if safe_div(b["supplied_dhw_kwh"], b["consumption_dhw_kwh"]) else None,
         ))
 
-    return HeatpumpResponse(
+    response = HeatpumpResponse(
         range=range,
         from_ts=datetime.fromtimestamp(from_ts, tz=timezone.utc),
         to_ts=datetime.fromtimestamp(to_ts, tz=timezone.utc),
         day_count=len(days),
         days=days,
     )
+    _heatpump_cache[cache_key] = response
+    return response

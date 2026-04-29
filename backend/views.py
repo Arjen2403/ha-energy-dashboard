@@ -254,9 +254,9 @@ means AS (
         s.start_ts AS hour,
         AVG(CASE WHEN sm.statistic_id = 'sensor.boiler_outside_temperature'
             THEN s.mean END) AS outside_temp_c,
-        AVG(CASE WHEN sm.statistic_id = 'sensor.boiler_current_flow_temperature'
-            THEN s.mean END) AS flow_temp_c,
         AVG(CASE WHEN sm.statistic_id = 'sensor.boiler_return_temperature'
+            THEN s.mean END) AS flow_temp_c,
+        AVG(CASE WHEN sm.statistic_id = 'sensor.boiler_current_flow_temperature'
             THEN s.mean END) AS return_temp_c,
         AVG(CASE WHEN sm.statistic_id = 'sensor.boiler_compressor_power_output'
             THEN s.mean END) AS compressor_kw
@@ -299,5 +299,94 @@ def query_hourly_heatpump(conn, from_ts: int, to_ts: int):
     """
     rows = conn.execute(
         V_HOURLY_HEATPUMP, {"from_ts": from_ts, "to_ts": to_ts}
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+# v_hourly_solar
+#
+# Per uur (UTC): PV-productie kWh + gemiddeld vermogen + inverter-temp +
+# AC output voltage. Plus import/export voor self-consumption-berekening.
+# Bouwt voort op het patroon van v_hourly_energy_flows maar specifiek voor
+# de Solar pagina.
+
+V_HOURLY_SOLAR = """
+WITH RECURSIVE
+spine(hour) AS (
+    SELECT :from_ts
+    UNION ALL
+    SELECT hour + 3600 FROM spine WHERE hour + 3600 <= :to_ts
+),
+
+deltas AS (
+    SELECT
+        sm.statistic_id,
+        s.start_ts AS hour,
+        s.sum - LAG(s.sum) OVER (
+            PARTITION BY s.metadata_id ORDER BY s.start_ts
+        ) AS delta
+    FROM statistics s
+    JOIN statistics_meta sm ON sm.id = s.metadata_id
+    WHERE sm.statistic_id IN (
+        'sensor.trannergy_energy_total',
+        'sensor.p1_meter_energy_export_tariff_1',
+        'sensor.p1_meter_energy_export_tariff_2'
+    )
+      AND s.start_ts >= :from_ts - 3600
+      AND s.start_ts <= :to_ts
+),
+
+flows AS (
+    SELECT
+        d.hour,
+        SUM(CASE WHEN d.statistic_id = 'sensor.trannergy_energy_total'
+            THEN d.delta END) AS pv_kwh_raw,
+        SUM(CASE WHEN d.statistic_id LIKE '%export%' THEN d.delta END) AS export_kwh
+    FROM deltas d
+    WHERE d.hour >= :from_ts
+    GROUP BY d.hour
+),
+
+means AS (
+    SELECT
+        s.start_ts AS hour,
+        AVG(CASE WHEN sm.statistic_id = 'sensor.trannergy_actual_power'
+            THEN s.mean END) AS pv_w,
+        AVG(CASE WHEN sm.statistic_id = 'sensor.trannergy_temperature'
+            THEN s.mean END) AS inverter_temp_c,
+        AVG(CASE WHEN sm.statistic_id = 'sensor.trannergy_ac_output_voltage_1'
+            THEN s.mean END) AS inverter_voltage_v
+    FROM statistics s
+    JOIN statistics_meta sm ON sm.id = s.metadata_id
+    WHERE sm.statistic_id IN (
+        'sensor.trannergy_actual_power',
+        'sensor.trannergy_temperature',
+        'sensor.trannergy_ac_output_voltage_1'
+    )
+      AND s.start_ts >= :from_ts
+      AND s.start_ts <= :to_ts
+    GROUP BY s.start_ts
+)
+
+SELECT
+    spine.hour AS hour_ts,
+    COALESCE(f.pv_kwh_raw, 0) AS pv_kwh,
+    f.export_kwh,
+    m.pv_w,
+    m.inverter_temp_c,
+    m.inverter_voltage_v
+FROM spine
+LEFT JOIN flows f ON f.hour = spine.hour
+LEFT JOIN means m ON m.hour = spine.hour
+ORDER BY spine.hour
+"""
+
+
+def query_hourly_solar(conn, from_ts: int, to_ts: int):
+    """Voer v_hourly_solar uit en retourneer een lijst dicts.
+
+    from_ts en to_ts zijn unix epoch seconds (UTC), uur-aligned.
+    """
+    rows = conn.execute(
+        V_HOURLY_SOLAR, {"from_ts": from_ts, "to_ts": to_ts}
     ).fetchall()
     return [dict(r) for r in rows]

@@ -3,10 +3,16 @@
 Anders dan /api/flows leest dit endpoint uit de `states` tabel (live, sub-seconde),
 niet uit de `statistics` LTS tabel. Veel grotere tabel, maar we filteren op een
 korte tijdrange (laatste state of laatste 6 uur).
+
+Response-caching met 10s TTL: de browser ververst elke 30s, dus 2/3 van de
+polls krijgt een cached antwoord en raakt de DB niet aan. Vermindert load
+en versnelt de pagina als de snapshot.db net herschreven is en SMB-cache
+ongeldig is.
 """
 from datetime import datetime, timezone
 from typing import Optional
 
+from cachetools import TTLCache
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -14,6 +20,8 @@ from ..db import ha_db
 from ..pricing import import_price as vandebron_import_price
 
 router = APIRouter()
+
+_overview_cache: TTLCache = TTLCache(maxsize=1, ttl=10)
 
 
 KPI_ENTITIES = [
@@ -134,6 +142,11 @@ def _query_6h_trend(conn) -> list[TrendPoint]:
 
 @router.get("/overview", response_model=OverviewResponse)
 def get_overview():
+    # Cache hit? Direct terug. Vermindert DB-roundtrips bij snel-pollende browser.
+    cached = _overview_cache.get("data")
+    if cached is not None:
+        return cached
+
     with ha_db() as conn:
         latest = _query_latest_states(conn, KPI_ENTITIES)
         trend = _query_6h_trend(conn)
@@ -159,7 +172,7 @@ def get_overview():
         else None
     )
 
-    return OverviewResponse(
+    response = OverviewResponse(
         kpi=Kpi(
             grid_w=grid_w,
             pv_w=pv_w,
@@ -170,3 +183,5 @@ def get_overview():
         ),
         trend_6h=trend,
     )
+    _overview_cache["data"] = response
+    return response
