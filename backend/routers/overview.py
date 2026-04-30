@@ -1,13 +1,10 @@
 """/api/overview — live KPIs + 6h trend voor de Now-pagina.
 
 Anders dan /api/flows leest dit endpoint uit de `states` tabel (live, sub-seconde),
-niet uit de `statistics` LTS tabel. Veel grotere tabel, maar we filteren op een
-korte tijdrange (laatste state of laatste 6 uur).
+niet uit de `statistics` LTS tabel.
 
-Response-caching met 10s TTL: de browser ververst elke 30s, dus 2/3 van de
-polls krijgt een cached antwoord en raakt de DB niet aan. Vermindert load
-en versnelt de pagina als de snapshot.db net herschreven is en SMB-cache
-ongeldig is.
+Caching: 10s TTL fresh + serve-stale-on-error fallback. Bij DB-errors (disk I/O,
+locked, etc.) krijgt de gebruiker de laatst bekende goede response ipv een 500.
 """
 from datetime import datetime, timezone
 from typing import Optional
@@ -21,14 +18,15 @@ from ..pricing import import_price as vandebron_import_price
 
 router = APIRouter()
 
-_overview_cache: TTLCache = TTLCache(maxsize=1, ttl=10)
+_overview_cache: TTLCache = TTLCache(maxsize=1, ttl=60)
+_overview_stale: dict = {}
 
 
 KPI_ENTITIES = [
-    "sensor.p1_meter_power",                 # signed: positief = import, negatief = export
-    "sensor.trannergy_actual_power",         # PV vermogen (W)
-    "sensor.nord_pool_nl_current_price",     # spot prijs (EUR/kWh)
-    "sensor.boiler_outside_temperature",     # buitentemp via warmtepomp
+    "sensor.p1_meter_power",
+    "sensor.trannergy_actual_power",
+    "sensor.nord_pool_nl_current_price",
+    "sensor.boiler_outside_temperature",
 ]
 
 TREND_ENTITIES = ["sensor.p1_meter_power", "sensor.trannergy_actual_power"]
@@ -56,7 +54,6 @@ class OverviewResponse(BaseModel):
 
 
 def _safe_float(s) -> Optional[float]:
-    """Cast HA state-string naar float, of None bij unknown/unavailable/garbage."""
     if s is None or s in ("unknown", "unavailable", ""):
         return None
     try:
@@ -66,7 +63,6 @@ def _safe_float(s) -> Optional[float]:
 
 
 def _query_latest_states(conn, entity_ids: list[str]) -> dict:
-    """Return {entity_id: {'state': str, 'ts': int}} voor laatste state per entity."""
     placeholders = ",".join(["?"] * len(entity_ids))
     sql = f"""
         WITH latest AS (
@@ -90,7 +86,6 @@ def _query_latest_states(conn, entity_ids: list[str]) -> dict:
 
 
 def _query_6h_trend(conn) -> list[TrendPoint]:
-    """5-min buckets met avg power voor PV + grid over laatste 6 uur."""
     now_ts = int(datetime.now(timezone.utc).timestamp())
     from_ts = now_ts - 6 * 3600
 
@@ -113,7 +108,6 @@ def _query_6h_trend(conn) -> list[TrendPoint]:
         from_ts,
     ]).fetchall()
 
-    # Pivot: één rij per bucket met pv_w + grid_w naast elkaar
     by_bucket = {}
     for r in rows:
         b = r["bucket_ts"]
@@ -142,46 +136,53 @@ def _query_6h_trend(conn) -> list[TrendPoint]:
 
 @router.get("/overview", response_model=OverviewResponse)
 def get_overview():
-    # Cache hit? Direct terug. Vermindert DB-roundtrips bij snel-pollende browser.
-    cached = _overview_cache.get("data")
+    cache_key = "data"
+    cached = _overview_cache.get(cache_key)
     if cached is not None:
         return cached
 
-    with ha_db() as conn:
-        latest = _query_latest_states(conn, KPI_ENTITIES)
-        trend = _query_6h_trend(conn)
+    try:
+        with ha_db() as conn:
+            latest = _query_latest_states(conn, KPI_ENTITIES)
+            trend = _query_6h_trend(conn)
 
-    def state(eid):
-        return _safe_float(latest.get(eid, {}).get("state"))
+        def state(eid):
+            return _safe_float(latest.get(eid, {}).get("state"))
 
-    grid_w = state("sensor.p1_meter_power")
-    pv_w = state("sensor.trannergy_actual_power")
-    spot = state("sensor.nord_pool_nl_current_price")
-    outside_c = state("sensor.boiler_outside_temperature")
+        grid_w = state("sensor.p1_meter_power")
+        pv_w = state("sensor.trannergy_actual_power")
+        spot = state("sensor.nord_pool_nl_current_price")
+        outside_c = state("sensor.boiler_outside_temperature")
 
-    house_w = (pv_w + grid_w) if pv_w is not None and grid_w is not None else None
-    import_price = vandebron_import_price(spot) if spot is not None else None
+        house_w = (pv_w + grid_w) if pv_w is not None and grid_w is not None else None
+        import_price = vandebron_import_price(spot) if spot is not None else None
 
-    last_ts_unix = max(
-        (v["ts"] for v in latest.values() if v.get("ts") is not None),
-        default=None,
-    )
-    last_updated = (
-        datetime.fromtimestamp(last_ts_unix, tz=timezone.utc)
-        if last_ts_unix is not None
-        else None
-    )
+        last_ts_unix = max(
+            (v["ts"] for v in latest.values() if v.get("ts") is not None),
+            default=None,
+        )
+        last_updated = (
+            datetime.fromtimestamp(last_ts_unix, tz=timezone.utc)
+            if last_ts_unix is not None
+            else None
+        )
 
-    response = OverviewResponse(
-        kpi=Kpi(
-            grid_w=grid_w,
-            pv_w=pv_w,
-            house_w=house_w,
-            import_price_eur_per_kwh=import_price,
-            outside_temp_c=outside_c,
-            last_updated=last_updated,
-        ),
-        trend_6h=trend,
-    )
-    _overview_cache["data"] = response
-    return response
+        response = OverviewResponse(
+            kpi=Kpi(
+                grid_w=grid_w,
+                pv_w=pv_w,
+                house_w=house_w,
+                import_price_eur_per_kwh=import_price,
+                outside_temp_c=outside_c,
+                last_updated=last_updated,
+            ),
+            trend_6h=trend,
+        )
+        _overview_cache[cache_key] = response
+        _overview_stale[cache_key] = response
+        return response
+    except Exception:
+        stale = _overview_stale.get(cache_key)
+        if stale is not None:
+            return stale
+        raise
