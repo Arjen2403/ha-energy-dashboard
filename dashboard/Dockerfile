@@ -7,6 +7,7 @@ RUN apk add --no-cache git
 # Clone de dashboard code
 ARG REPO_URL=https://github.com/Arjen2403/ha-energy-dashboard.git
 ARG REPO_REF=main
+ARG CACHEBUST=2
 RUN git clone --depth 1 --branch $REPO_REF $REPO_URL /app
 
 # Install dependencies direct, niet via project-install.
