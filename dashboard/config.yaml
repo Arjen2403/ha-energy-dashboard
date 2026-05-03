@@ -1,5 +1,5 @@
 name: HA Energy Dashboard
-version: "0.1.0"
+version: "0.1.1"
 slug: ha_energy_dashboard
 description: Browser-native energy dashboard for full-electric homes
 url: https://github.com/Arjen2403/ha-energy-dashboard
