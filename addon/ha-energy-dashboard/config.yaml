@@ -1,0 +1,16 @@
+name: HA Energy Dashboard
+version: "0.1.0"
+slug: ha_energy_dashboard
+description: Browser-native energy dashboard for full-electric homes
+url: https://github.com/Arjen2403/ha-energy-dashboard
+arch:
+  - aarch64
+init: false
+ports:
+  8000/tcp: 8099
+ports_description:
+  8000/tcp: Dashboard UI (default external port 8099)
+map:
+  - config:ro
+options: {}
+schema: {}
