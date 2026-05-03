@@ -17,9 +17,9 @@
 </head>
 <body class="bg-gray-50 text-gray-900">
 
-<nav class="bg-white shadow px-6 py-3 flex gap-6 mb-6">
+<nav class="bg-white shadow px-6 py-3 flex gap-6 mb-6 flex-wrap">
     <span class="font-bold text-blue-600">HA Energy Dashboard</span>
-    <a href="/now.html" class="text-gray-500 hover:text-blue-600">Now</a>
+    <a href="/now.html" class="text-blue-600 font-semibold">Now</a>
     <a href="/flows.html" class="text-gray-500 hover:text-blue-600">Energy Flows</a>
     <a href="/costs.html" class="text-gray-500 hover:text-blue-600">Costs</a>
     <a href="/heatpump.html" class="text-gray-500 hover:text-blue-600">Heat Pump</a>
@@ -71,6 +71,12 @@
         </div>
     </div>
 
+    <!-- Sankey energy flow -->
+    <div x-show="kpi" class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm text-gray-500 mb-2">Live energy flow (W)</h2>
+        <div id="sankey-chart" class="h-80"></div>
+    </div>
+
     <!-- 6h trend -->
     <div x-show="kpi" class="bg-white p-4 rounded shadow">
         <h2 class="text-sm text-gray-500 mb-2">Laatste 6 uur (5-min gemiddelden)</h2>
@@ -91,7 +97,6 @@ function nowApp() {
 
         init() {
             this.load();
-            // Auto-refresh elke 30s. setInterval blijft draaien zolang de tab open is.
             this.timer = setInterval(() => this.load(), 30000);
         },
 
@@ -131,6 +136,11 @@ function nowApp() {
         },
 
         draw() {
+            this.drawTrend();
+            this.drawSankey();
+        },
+
+        drawTrend() {
             const t = this.trend;
             if (!t || t.length === 0) return;
 
@@ -159,6 +169,71 @@ function nowApp() {
                 legend: { orientation: 'h', y: -0.2 },
             };
             Plotly.newPlot('trend-chart', traces, layout, { responsive: true });
+        },
+
+        drawSankey() {
+            const k = this.kpi;
+            if (!k) return;
+
+            // Alle waardes clampen naar >= 0 want Sankey accepteert geen negatieven
+            const pv = Math.max(0, k.pv_w || 0);
+            const gridIn = Math.max(0, k.grid_w || 0);    // positief = import
+            const gridOut = Math.max(0, -(k.grid_w || 0)); // negatief grid_w = export
+            const house = Math.max(0, k.house_w || 0);
+            const hp = Math.max(0, k.heatpump_w || 0);
+            const quooker = Math.max(0, k.quooker_w || 0);
+            const afwas = Math.max(0, k.afwasmachine_w || 0);
+            const overig = Math.max(0, k.overig_w || 0);
+
+            // Verdeling PV → Huis versus PV → Grid export
+            const pvToHouse = Math.min(pv, house);
+            const pvToGrid = Math.max(0, pv - house);
+
+            const labels = [
+                'PV ' + Math.round(pv) + 'W',
+                'Grid in ' + Math.round(gridIn) + 'W',
+                'Huis ' + Math.round(house) + 'W',
+                'Warmtepomp ' + Math.round(hp) + 'W',
+                'Quooker ' + Math.round(quooker) + 'W',
+                'Afwasmachine ' + Math.round(afwas) + 'W',
+                'Overig ' + Math.round(overig) + 'W',
+                'Grid uit ' + Math.round(gridOut) + 'W',
+            ];
+            const colors = ['#facc15', '#3b82f6', '#9ca3af', '#dc2626', '#06b6d4', '#8b5cf6', '#a3a3a3', '#22c55e'];
+
+            const trace = {
+                type: 'sankey',
+                orientation: 'h',
+                node: {
+                    pad: 15,
+                    thickness: 18,
+                    line: { color: '#000', width: 0.3 },
+                    label: labels,
+                    color: colors,
+                },
+                link: {
+                    // Bron-index → doel-index → waarde
+                    source: [0, 0, 1, 2, 2, 2, 2],
+                    target: [2, 7, 2, 3, 4, 5, 6],
+                    value: [pvToHouse, pvToGrid, gridIn, hp, quooker, afwas, overig],
+                    color: [
+                        'rgba(250,204,21,0.4)',  // PV → Huis
+                        'rgba(34,197,94,0.4)',   // PV → Grid uit
+                        'rgba(59,130,246,0.4)',  // Grid in → Huis
+                        'rgba(220,38,38,0.4)',   // Huis → Warmtepomp
+                        'rgba(6,182,212,0.4)',   // Huis → Quooker
+                        'rgba(139,92,246,0.4)',  // Huis → Afwasmachine
+                        'rgba(163,163,163,0.4)', // Huis → Overig
+                    ],
+                },
+            };
+
+            const layout = {
+                margin: { t: 10, l: 10, r: 10, b: 10 },
+                font: { size: 12 },
+            };
+
+            Plotly.newPlot('sankey-chart', [trace], layout, { responsive: true });
         },
     };
 }

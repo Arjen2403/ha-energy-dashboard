@@ -1,11 +1,4 @@
-"""/api/overview — live KPIs + 6h trend voor de Now-pagina.
-
-Anders dan /api/flows leest dit endpoint uit de `states` tabel (live, sub-seconde),
-niet uit de `statistics` LTS tabel.
-
-Caching: 10s TTL fresh + serve-stale-on-error fallback. Bij DB-errors (disk I/O,
-locked, etc.) krijgt de gebruiker de laatst bekende goede response ipv een 500.
-"""
+"""/api/overview — live KPIs + 6h trend + Sankey flow data voor de Now-pagina."""
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -27,9 +20,10 @@ KPI_ENTITIES = [
     "sensor.trannergy_actual_power",
     "sensor.nord_pool_nl_current_price",
     "sensor.boiler_outside_temperature",
+    "sensor.boiler_compressor_power_output",  # kW
+    "sensor.socket_quooker_power",            # W
+    "sensor.socket_afwasmachine_power",       # W
 ]
-
-TREND_ENTITIES = ["sensor.p1_meter_power", "sensor.trannergy_actual_power"]
 
 
 class Kpi(BaseModel):
@@ -39,6 +33,11 @@ class Kpi(BaseModel):
     import_price_eur_per_kwh: Optional[float] = None
     outside_temp_c: Optional[float] = None
     last_updated: Optional[datetime] = None
+    # Appliance breakdown voor Sankey
+    heatpump_w: Optional[float] = None
+    quooker_w: Optional[float] = None
+    afwasmachine_w: Optional[float] = None
+    overig_w: Optional[float] = None
 
 
 class TrendPoint(BaseModel):
@@ -154,8 +153,21 @@ def get_overview():
         spot = state("sensor.nord_pool_nl_current_price")
         outside_c = state("sensor.boiler_outside_temperature")
 
+        # Appliance powers (boiler is in kW, sockets in W)
+        boiler_kw = state("sensor.boiler_compressor_power_output")
+        heatpump_w = boiler_kw * 1000 if boiler_kw is not None else None
+        quooker_w = state("sensor.socket_quooker_power")
+        afwasmachine_w = state("sensor.socket_afwasmachine_power")
+
         house_w = (pv_w + grid_w) if pv_w is not None and grid_w is not None else None
         import_price = vandebron_import_price(spot) if spot is not None else None
+
+        # Overig = totaal huis - bekende appliances
+        if house_w is not None:
+            known = (heatpump_w or 0) + (quooker_w or 0) + (afwasmachine_w or 0)
+            overig_w = max(0, house_w - known)
+        else:
+            overig_w = None
 
         last_ts_unix = max(
             (v["ts"] for v in latest.values() if v.get("ts") is not None),
@@ -175,6 +187,10 @@ def get_overview():
                 import_price_eur_per_kwh=import_price,
                 outside_temp_c=outside_c,
                 last_updated=last_updated,
+                heatpump_w=heatpump_w,
+                quooker_w=quooker_w,
+                afwasmachine_w=afwasmachine_w,
+                overig_w=overig_w,
             ),
             trend_6h=trend,
         )
