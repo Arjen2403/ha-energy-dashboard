@@ -1,4 +1,7 @@
-"""/api/heatpump — daily heat pump performance over een gekozen tijdrange."""
+"""/api/heatpump — daily heat pump performance over een gekozen tijdrange.
+
+Caching: 5 min TTL fresh + serve-stale-on-error fallback.
+"""
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
@@ -14,6 +17,7 @@ from ..views import query_hourly_heatpump
 router = APIRouter()
 
 _heatpump_cache: TTLCache = TTLCache(maxsize=16, ttl=300)
+_heatpump_stale: dict = {}
 
 NL_TZ = ZoneInfo("Europe/Amsterdam")
 
@@ -54,8 +58,7 @@ def _resolve_range(range_name: str, from_iso: Optional[str], to_iso: Optional[st
     if range_name == "today":
         nl_now = now.astimezone(NL_TZ)
         nl_midnight = nl_now.replace(hour=0, minute=0, second=0, microsecond=0)
-        from_dt = nl_midnight.astimezone(timezone.utc)
-        to_dt = now
+        from_dt = nl_midnight.astimezone(timezone.utc); to_dt = now
     elif range_name == "7d":
         from_dt = now - timedelta(days=7); to_dt = now
     elif range_name == "30d":
@@ -95,84 +98,91 @@ def get_heatpump(
     if cached is not None:
         return cached
 
-    from_ts, to_ts = _resolve_range(range, from_, to)
+    try:
+        from_ts, to_ts = _resolve_range(range, from_, to)
 
-    with ha_db() as conn:
-        hourly_rows = query_hourly_heatpump(conn, from_ts, to_ts)
+        with ha_db() as conn:
+            hourly_rows = query_hourly_heatpump(conn, from_ts, to_ts)
 
-    daily: dict[str, dict] = defaultdict(lambda: {
-        "consumption_total_kwh": 0.0,
-        "supplied_total_kwh": 0.0,
-        "consumption_heating_kwh": 0.0,
-        "consumption_dhw_kwh": 0.0,
-        "supplied_heating_kwh": 0.0,
-        "supplied_dhw_kwh": 0.0,
-        "uptime_min": 0.0,
-        "outside_temps": [],
-        "flow_temps": [],
-        "return_temps": [],
-    })
+        daily: dict[str, dict] = defaultdict(lambda: {
+            "consumption_total_kwh": 0.0,
+            "supplied_total_kwh": 0.0,
+            "consumption_heating_kwh": 0.0,
+            "consumption_dhw_kwh": 0.0,
+            "supplied_heating_kwh": 0.0,
+            "supplied_dhw_kwh": 0.0,
+            "uptime_min": 0.0,
+            "outside_temps": [],
+            "flow_temps": [],
+            "return_temps": [],
+        })
 
-    for r in hourly_rows:
-        hour_dt_utc = datetime.fromtimestamp(r["hour_ts"], tz=timezone.utc)
-        day_key = hour_dt_utc.astimezone(NL_TZ).strftime("%Y-%m-%d")
-        b = daily[day_key]
+        for r in hourly_rows:
+            hour_dt_utc = datetime.fromtimestamp(r["hour_ts"], tz=timezone.utc)
+            day_key = hour_dt_utc.astimezone(NL_TZ).strftime("%Y-%m-%d")
+            b = daily[day_key]
 
-        for k in ("consumption_total_kwh", "supplied_total_kwh",
-                  "consumption_heating_kwh", "consumption_dhw_kwh",
-                  "supplied_heating_kwh", "supplied_dhw_kwh", "uptime_min"):
-            v = r.get(k)
-            if v is not None:
-                b[k] += v
+            for k in ("consumption_total_kwh", "supplied_total_kwh",
+                      "consumption_heating_kwh", "consumption_dhw_kwh",
+                      "supplied_heating_kwh", "supplied_dhw_kwh", "uptime_min"):
+                v = r.get(k)
+                if v is not None:
+                    b[k] += v
 
-        if r.get("outside_temp_c") is not None:
-            b["outside_temps"].append(r["outside_temp_c"])
-        if r.get("flow_temp_c") is not None:
-            b["flow_temps"].append(r["flow_temp_c"])
-        if r.get("return_temp_c") is not None:
-            b["return_temps"].append(r["return_temp_c"])
+            if r.get("outside_temp_c") is not None:
+                b["outside_temps"].append(r["outside_temp_c"])
+            if r.get("flow_temp_c") is not None:
+                b["flow_temps"].append(r["flow_temp_c"])
+            if r.get("return_temp_c") is not None:
+                b["return_temps"].append(r["return_temp_c"])
 
-    def avg(lst):
-        return sum(lst) / len(lst) if lst else None
+        def avg(lst):
+            return sum(lst) / len(lst) if lst else None
 
-    def safe_div(a, b):
-        return a / b if b and b > 0 else None
+        def safe_div(a, b):
+            return a / b if b and b > 0 else None
 
-    days = []
-    for date_str in sorted(daily.keys()):
-        b = daily[date_str]
-        avg_out = avg(b["outside_temps"])
-        avg_flow = avg(b["flow_temps"])
-        avg_return = avg(b["return_temps"])
-        delta_t = avg_flow - avg_return if avg_flow is not None and avg_return is not None else None
+        days = []
+        for date_str in sorted(daily.keys()):
+            b = daily[date_str]
+            avg_out = avg(b["outside_temps"])
+            avg_flow = avg(b["flow_temps"])
+            avg_return = avg(b["return_temps"])
+            delta_t = avg_flow - avg_return if avg_flow is not None and avg_return is not None else None
 
-        days.append(DailyHeatpump(
-            date=date_str,
-            consumption_total_kwh=round(b["consumption_total_kwh"], 2),
-            supplied_total_kwh=round(b["supplied_total_kwh"], 2),
-            consumption_heating_kwh=round(b["consumption_heating_kwh"], 2),
-            consumption_dhw_kwh=round(b["consumption_dhw_kwh"], 2),
-            supplied_heating_kwh=round(b["supplied_heating_kwh"], 2),
-            supplied_dhw_kwh=round(b["supplied_dhw_kwh"], 2),
-            uptime_min=round(b["uptime_min"], 1) if b["uptime_min"] else None,
-            avg_outside_temp_c=round(avg_out, 1) if avg_out is not None else None,
-            avg_flow_temp_c=round(avg_flow, 1) if avg_flow is not None else None,
-            avg_return_temp_c=round(avg_return, 1) if avg_return is not None else None,
-            delta_t_c=round(delta_t, 1) if delta_t is not None else None,
-            cop_total=round(safe_div(b["supplied_total_kwh"], b["consumption_total_kwh"]), 2)
-                if safe_div(b["supplied_total_kwh"], b["consumption_total_kwh"]) else None,
-            cop_heating=round(safe_div(b["supplied_heating_kwh"], b["consumption_heating_kwh"]), 2)
-                if safe_div(b["supplied_heating_kwh"], b["consumption_heating_kwh"]) else None,
-            cop_dhw=round(safe_div(b["supplied_dhw_kwh"], b["consumption_dhw_kwh"]), 2)
-                if safe_div(b["supplied_dhw_kwh"], b["consumption_dhw_kwh"]) else None,
-        ))
+            days.append(DailyHeatpump(
+                date=date_str,
+                consumption_total_kwh=round(b["consumption_total_kwh"], 2),
+                supplied_total_kwh=round(b["supplied_total_kwh"], 2),
+                consumption_heating_kwh=round(b["consumption_heating_kwh"], 2),
+                consumption_dhw_kwh=round(b["consumption_dhw_kwh"], 2),
+                supplied_heating_kwh=round(b["supplied_heating_kwh"], 2),
+                supplied_dhw_kwh=round(b["supplied_dhw_kwh"], 2),
+                uptime_min=round(b["uptime_min"], 1) if b["uptime_min"] else None,
+                avg_outside_temp_c=round(avg_out, 1) if avg_out is not None else None,
+                avg_flow_temp_c=round(avg_flow, 1) if avg_flow is not None else None,
+                avg_return_temp_c=round(avg_return, 1) if avg_return is not None else None,
+                delta_t_c=round(delta_t, 1) if delta_t is not None else None,
+                cop_total=round(safe_div(b["supplied_total_kwh"], b["consumption_total_kwh"]), 2)
+                    if safe_div(b["supplied_total_kwh"], b["consumption_total_kwh"]) else None,
+                cop_heating=round(safe_div(b["supplied_heating_kwh"], b["consumption_heating_kwh"]), 2)
+                    if safe_div(b["supplied_heating_kwh"], b["consumption_heating_kwh"]) else None,
+                cop_dhw=round(safe_div(b["supplied_dhw_kwh"], b["consumption_dhw_kwh"]), 2)
+                    if safe_div(b["supplied_dhw_kwh"], b["consumption_dhw_kwh"]) else None,
+            ))
 
-    response = HeatpumpResponse(
-        range=range,
-        from_ts=datetime.fromtimestamp(from_ts, tz=timezone.utc),
-        to_ts=datetime.fromtimestamp(to_ts, tz=timezone.utc),
-        day_count=len(days),
-        days=days,
-    )
-    _heatpump_cache[cache_key] = response
-    return response
+        response = HeatpumpResponse(
+            range=range,
+            from_ts=datetime.fromtimestamp(from_ts, tz=timezone.utc),
+            to_ts=datetime.fromtimestamp(to_ts, tz=timezone.utc),
+            day_count=len(days),
+            days=days,
+        )
+        _heatpump_cache[cache_key] = response
+        _heatpump_stale[cache_key] = response
+        return response
+    except Exception:
+        stale = _heatpump_stale.get(cache_key)
+        if stale is not None:
+            return stale
+        raise

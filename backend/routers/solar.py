@@ -1,4 +1,7 @@
-"""/api/solar — daily PV stats + day-curve + inverter temp."""
+"""/api/solar — daily PV stats + day-curve + inverter temp.
+
+Caching: 5 min TTL fresh + serve-stale-on-error fallback.
+"""
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
@@ -14,6 +17,7 @@ from ..views import query_hourly_solar
 router = APIRouter()
 
 _solar_cache: TTLCache = TTLCache(maxsize=16, ttl=300)
+_solar_stale: dict = {}
 
 NL_TZ = ZoneInfo("Europe/Amsterdam")
 
@@ -53,8 +57,7 @@ def _resolve_range(range_name: str, from_iso: Optional[str], to_iso: Optional[st
     if range_name == "today":
         nl_now = now.astimezone(NL_TZ)
         nl_midnight = nl_now.replace(hour=0, minute=0, second=0, microsecond=0)
-        from_dt = nl_midnight.astimezone(timezone.utc)
-        to_dt = now
+        from_dt = nl_midnight.astimezone(timezone.utc); to_dt = now
     elif range_name == "7d":
         from_dt = now - timedelta(days=7); to_dt = now
     elif range_name == "30d":
@@ -94,77 +97,84 @@ def get_solar(
     if cached is not None:
         return cached
 
-    from_ts, to_ts = _resolve_range(range_, from_, to)
+    try:
+        from_ts, to_ts = _resolve_range(range_, from_, to)
 
-    with ha_db() as conn:
-        hourly_rows = query_hourly_solar(conn, from_ts, to_ts)
+        with ha_db() as conn:
+            hourly_rows = query_hourly_solar(conn, from_ts, to_ts)
 
-    daily: dict[str, dict] = defaultdict(lambda: {
-        "pv_kwh": 0.0,
-        "export_kwh": 0.0,
-        "peak_pv_w": None,
-        "inverter_temps": [],
-    })
+        daily: dict[str, dict] = defaultdict(lambda: {
+            "pv_kwh": 0.0,
+            "export_kwh": 0.0,
+            "peak_pv_w": None,
+            "inverter_temps": [],
+        })
 
-    hour_buckets: dict[int, list[float]] = defaultdict(list)
+        hour_buckets: dict[int, list[float]] = defaultdict(list)
 
-    for r in hourly_rows:
-        hour_dt_utc = datetime.fromtimestamp(r["hour_ts"], tz=timezone.utc)
-        hour_dt_nl = hour_dt_utc.astimezone(NL_TZ)
-        day_key = hour_dt_nl.strftime("%Y-%m-%d")
-        hour_of_day = hour_dt_nl.hour
+        for r in hourly_rows:
+            hour_dt_utc = datetime.fromtimestamp(r["hour_ts"], tz=timezone.utc)
+            hour_dt_nl = hour_dt_utc.astimezone(NL_TZ)
+            day_key = hour_dt_nl.strftime("%Y-%m-%d")
+            hour_of_day = hour_dt_nl.hour
 
-        b = daily[day_key]
-        if r.get("pv_kwh") is not None:
-            b["pv_kwh"] += r["pv_kwh"]
-        if r.get("export_kwh") is not None:
-            b["export_kwh"] += r["export_kwh"]
-        if r.get("pv_w") is not None:
-            if b["peak_pv_w"] is None or r["pv_w"] > b["peak_pv_w"]:
-                b["peak_pv_w"] = r["pv_w"]
-            hour_buckets[hour_of_day].append(r["pv_w"])
-        if r.get("inverter_temp_c") is not None:
-            b["inverter_temps"].append(r["inverter_temp_c"])
+            b = daily[day_key]
+            if r.get("pv_kwh") is not None:
+                b["pv_kwh"] += r["pv_kwh"]
+            if r.get("export_kwh") is not None:
+                b["export_kwh"] += r["export_kwh"]
+            if r.get("pv_w") is not None:
+                if b["peak_pv_w"] is None or r["pv_w"] > b["peak_pv_w"]:
+                    b["peak_pv_w"] = r["pv_w"]
+                hour_buckets[hour_of_day].append(r["pv_w"])
+            if r.get("inverter_temp_c") is not None:
+                b["inverter_temps"].append(r["inverter_temp_c"])
 
-    days = []
-    for date_str in sorted(daily.keys()):
-        b = daily[date_str]
-        pv = b["pv_kwh"]
-        export = b["export_kwh"]
-        self_consumed = max(0.0, pv - export)
-        ratio = (self_consumed / pv) if pv > 0 else None
-        avg_temp = (
-            sum(b["inverter_temps"]) / len(b["inverter_temps"])
-            if b["inverter_temps"] else None
+        days = []
+        for date_str in sorted(daily.keys()):
+            b = daily[date_str]
+            pv = b["pv_kwh"]
+            export = b["export_kwh"]
+            self_consumed = max(0.0, pv - export)
+            ratio = (self_consumed / pv) if pv > 0 else None
+            avg_temp = (
+                sum(b["inverter_temps"]) / len(b["inverter_temps"])
+                if b["inverter_temps"] else None
+            )
+
+            days.append(DailySolar(
+                date=date_str,
+                pv_kwh=round(pv, 2),
+                peak_power_w=round(b["peak_pv_w"], 0) if b["peak_pv_w"] is not None else None,
+                avg_inverter_temp_c=round(avg_temp, 1) if avg_temp is not None else None,
+                self_consumed_kwh=round(self_consumed, 2),
+                exported_kwh=round(export, 2),
+                self_consumption_ratio=round(ratio, 3) if ratio is not None else None,
+            ))
+
+        day_curve = []
+        for hour in range(24):
+            samples = hour_buckets.get(hour, [])
+            avg = sum(samples) / len(samples) if samples else None
+            day_curve.append(DayCurvePoint(
+                hour=hour,
+                avg_pv_w=round(avg, 0) if avg is not None else None,
+                sample_count=len(samples),
+            ))
+
+        response = SolarResponse(
+            range=range_,
+            from_ts=datetime.fromtimestamp(from_ts, tz=timezone.utc),
+            to_ts=datetime.fromtimestamp(to_ts, tz=timezone.utc),
+            day_count=len(days),
+            days=days,
+            day_curve=day_curve,
         )
-
-        days.append(DailySolar(
-            date=date_str,
-            pv_kwh=round(pv, 2),
-            peak_power_w=round(b["peak_pv_w"], 0) if b["peak_pv_w"] is not None else None,
-            avg_inverter_temp_c=round(avg_temp, 1) if avg_temp is not None else None,
-            self_consumed_kwh=round(self_consumed, 2),
-            exported_kwh=round(export, 2),
-            self_consumption_ratio=round(ratio, 3) if ratio is not None else None,
-        ))
-
-    day_curve = []
-    for hour in range(24):
-        samples = hour_buckets.get(hour, [])
-        avg = sum(samples) / len(samples) if samples else None
-        day_curve.append(DayCurvePoint(
-            hour=hour,
-            avg_pv_w=round(avg, 0) if avg is not None else None,
-            sample_count=len(samples),
-        ))
-
-    response = SolarResponse(
-        range=range_,
-        from_ts=datetime.fromtimestamp(from_ts, tz=timezone.utc),
-        to_ts=datetime.fromtimestamp(to_ts, tz=timezone.utc),
-        day_count=len(days),
-        days=days,
-        day_curve=day_curve,
-    )
-    _solar_cache[cache_key] = response
-    return response
+        _solar_cache[cache_key] = response
+        _solar_stale[cache_key] = response
+        return response
+    except Exception:
+        stale = _solar_stale.get(cache_key)
+        if stale is not None:
+            return stale
+        raise
