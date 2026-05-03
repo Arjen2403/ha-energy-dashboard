@@ -4,10 +4,16 @@ FROM $BUILD_FROM
 # git nodig om de dashboard repo te clonen tijdens build
 RUN apk add --no-cache git
 
-# Clone de dashboard code
+# Repository config
 ARG REPO_URL=https://github.com/Arjen2403/ha-energy-dashboard.git
 ARG REPO_REF=main
-ARG CACHEBUST=2
+
+# Auto cache-bust: de inhoud van deze URL verandert bij elke commit op main.
+# Docker invalideert daardoor automatisch de git-clone layer hieronder bij
+# elke nieuwe commit — geen handmatige CACHEBUST meer nodig.
+ADD https://api.github.com/repos/Arjen2403/ha-energy-dashboard/commits/main /tmp/latest-commit
+
+# Clone de dashboard code
 RUN git clone --depth 1 --branch $REPO_REF $REPO_URL /app
 
 # Install dependencies direct, niet via project-install.
