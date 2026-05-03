@@ -15,7 +15,7 @@ class Settings(BaseModel):
 
 
 settings = Settings(
-    ha_db_path=os.environ["HA_DB_PATH"],
+    ha_db_path=os.environ.get("HA_DB_PATH", "/config/home-assistant_v2.db"),
     cache_ttl_hourly=int(os.getenv("CACHE_TTL_HOURLY", 300)),
     cache_ttl_daily=int(os.getenv("CACHE_TTL_DAILY", 3600)),
     cache_ttl_monthly=int(os.getenv("CACHE_TTL_MONTHLY", 86400)),
