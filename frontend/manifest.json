@@ -1,0 +1,22 @@
+{
+  "name": "HA Energy Dashboard",
+  "short_name": "Energy",
+  "description": "Browser-native energy dashboard",
+  "start_url": "/now.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f9fafb",
+  "theme_color": "#3b82f6",
+  "icons": [
+    {
+      "src": "/android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
