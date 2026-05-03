@@ -1,4 +1,4 @@
-ARG BUILD_FROM
+ARG BUILD_FROM=ghcr.io/home-assistant/aarch64-base-python:3.11-alpine3.19
 FROM $BUILD_FROM
 
 # HA aarch64-base-python image is gebaseerd op Alpine Linux + Python.
