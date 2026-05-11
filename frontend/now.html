@@ -74,12 +74,14 @@
     <!-- Sankey energy flow -->
     <div x-show="kpi" class="bg-white p-4 rounded shadow mb-6">
         <h2 class="text-sm text-gray-500 mb-2">Live energy flow (W)</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Toont waar je stroom op dit moment vandaan komt en waar het naartoe gaat. Dikkere banden = meer vermogen. Linker kant zijn bronnen (PV + grid-import), rechts staan de bestemmingen (apparaten + grid-export).</p>
         <div id="sankey-chart" class="h-80"></div>
     </div>
 
     <!-- 6h trend -->
     <div x-show="kpi" class="bg-white p-4 rounded shadow">
         <h2 class="text-sm text-gray-500 mb-2">Laatste 6 uur (5-min gemiddelden)</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Vermogen in watt over de laatste 6 uur, per 5-min gemiddeld. Gele lijn = PV-productie, blauw = grid (positief = import, negatief = export), grijs = totaal huishoudverbruik.</p>
         <div id="trend-chart" class="h-72"></div>
     </div>
 
