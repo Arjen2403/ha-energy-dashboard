@@ -77,24 +77,28 @@
     <!-- Chart 1: Dagopbrengst -->
     <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
         <h2 class="text-sm text-gray-500 mb-2">Dagopbrengst (kWh per dag)</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Totale PV-productie per dag in kWh. Hoge waardes = veel zon. Op donkere dagen valt het laag uit.</p>
         <div id="daily-yield-chart" class="h-72"></div>
     </div>
 
     <!-- Chart 2: Day-curve -->
     <div x-show="!loading && dayCurve.length > 0" class="bg-white p-4 rounded shadow mb-6">
         <h2 class="text-sm text-gray-500 mb-2">Day-curve — gemiddeld vermogen per uur-van-dag (NL)</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Gemiddeld PV-vermogen per uur-van-dag (NL-tijd) over de geselecteerde periode. Klassieke zonneboog: stijgt na zonsopkomst, piekt rond 12-13u, daalt naar zonsondergang.</p>
         <div id="day-curve-chart" class="h-72"></div>
     </div>
 
     <!-- Chart 3: Self-consumption matrix -->
     <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
         <h2 class="text-sm text-gray-500 mb-2">Self-consumption matrix — direct verbruikt vs teruggeleverd</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Per dag: groen = direct zelf verbruikt, blauw = teruggeleverd aan grid. Hoe meer groen, hoe meer eigen-gebruik je hebt.</p>
         <div id="self-consumption-chart" class="h-72"></div>
     </div>
 
     <!-- Chart 4: Inverter temperatuur -->
     <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
         <h2 class="text-sm text-gray-500 mb-2">Inverter-temperatuur (gemiddelde per dag)</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Gemiddelde inverter-temperatuur per dag. Bij hoge waardes (>60°C in zomer) kan derating optreden — de inverter levert dan tijdelijk minder vermogen om oververhitting te voorkomen.</p>
         <div id="inverter-temp-chart" class="h-72"></div>
     </div>
 

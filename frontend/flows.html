@@ -60,6 +60,8 @@
 
     <!-- Chart-container. Plotly tekent erin via id 'flows-chart'. -->
     <div x-show="!loading && !error" class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm text-gray-500 mb-2">Dagelijkse energiebalans</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Elke balk staat voor één dag. Geel = PV-productie (zonne-energie opgewekt). Blauw boven nul = stroom die je van het net hebt afgenomen (import). Groen onder nul = stroom die je hebt teruggeleverd aan het net (export). Een dag met veel groen betekent dat je meer hebt opgewekt dan verbruikt.</p>
         <div id="flows-chart" class="h-96"></div>
     </div>
 

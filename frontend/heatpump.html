@@ -73,24 +73,28 @@
     <!-- Chart 1: COP-trends -->
     <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
         <h2 class="text-sm text-gray-500 mb-2">Daily COP — totaal, heating, DHW (lijn) + buitentemp (rechteras)</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Coefficient of Performance (COP) per dag = warmte uit / elektriciteit in. Hoger = efficiënter. Rood = totale COP, blauw streep = verwarming, paars stippel = warmwater. Grijze lijn (rechteras) = buitentemp. Bij koudere dagen daalt de COP doorgaans.</p>
         <div id="cop-trends-chart" class="h-72"></div>
     </div>
 
     <!-- Chart 2: COP vs buitentemp scatter -->
     <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
         <h2 class="text-sm text-gray-500 mb-2">COP totaal vs gemiddelde buitentemperatuur (1 punt per dag)</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Één punt per dag — X is gemiddelde buitentemp, Y is COP totaal. Toont of jouw warmtepomp voorspelbaar reageert op buitentemperatuur. Een dalende trend van links naar rechts is normaal.</p>
         <div id="cop-vs-temp-chart" class="h-72"></div>
     </div>
 
     <!-- Chart 3: Heating vs DHW consumption -->
     <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
         <h2 class="text-sm text-gray-500 mb-2">Verbruik per dag — heating vs DHW (gestapeld)</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Verbruik van de warmtepomp uitgesplitst in verwarming (blauw) en warm water/DHW (paars), per dag. Toont waar de pomp z'n energie aan kwijt is.</p>
         <div id="heating-dhw-chart" class="h-72"></div>
     </div>
 
     <!-- Chart 4: Flow/return/outside temperatures -->
     <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
         <h2 class="text-sm text-gray-500 mb-2">Gemiddelde temperaturen per dag — flow / return / buiten</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Drie temperatuurlijnen per dag. Rood = aanvoer (warm water uit pomp naar verwarming). Blauw = retour (terug naar pomp). Grijs = buiten. Verschil aanvoer-retour (ΔT) zegt iets over de warmtevraag in huis.</p>
         <div id="temps-chart" class="h-72"></div>
     </div>
 
