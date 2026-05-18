@@ -62,6 +62,9 @@ class StrategyResponse(BaseModel):
     day_count: int
     scenarios: list[ScenarioSummary]
     daily: list[DailyComparison]
+    # Extra velden voor ROI-berekening in de frontend
+    battery_savings_per_day_eur: float = 0.0
+    battery_overflow_kwh: float = 0.0
 
 
 def _floor_to_hour(ts: int) -> int:
@@ -72,20 +75,27 @@ def _resolve_range(range_name, from_iso, to_iso):
     now = datetime.now(timezone.utc)
     if range_name == "today":
         nl_now = now.astimezone(NL_TZ)
-        from_dt = nl_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc); to_dt = now
+        from_dt = nl_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+        to_dt = now
     elif range_name == "7d":
-        from_dt = now - timedelta(days=7); to_dt = now
+        from_dt = now - timedelta(days=7)
+        to_dt = now
     elif range_name == "30d":
-        from_dt = now - timedelta(days=30); to_dt = now
+        from_dt = now - timedelta(days=30)
+        to_dt = now
     elif range_name == "ytd":
         nl_now = now.astimezone(NL_TZ)
-        from_dt = nl_now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc); to_dt = now
+        from_dt = nl_now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+        to_dt = now
     elif range_name == "custom":
         if not (from_iso and to_iso):
             raise HTTPException(400, "Custom requires from+to")
-        from_dt = datetime.fromisoformat(from_iso); to_dt = datetime.fromisoformat(to_iso)
-        if from_dt.tzinfo is None: from_dt = from_dt.replace(tzinfo=timezone.utc)
-        if to_dt.tzinfo is None: to_dt = to_dt.replace(tzinfo=timezone.utc)
+        from_dt = datetime.fromisoformat(from_iso)
+        to_dt = datetime.fromisoformat(to_iso)
+        if from_dt.tzinfo is None:
+            from_dt = from_dt.replace(tzinfo=timezone.utc)
+        if to_dt.tzinfo is None:
+            to_dt = to_dt.replace(tzinfo=timezone.utc)
     else:
         raise HTTPException(400, f"Unknown range '{range_name}'.")
     if to_dt <= from_dt:
@@ -192,7 +202,8 @@ def get_strategy(
         def make_summary(id_, label, daily_var, **extra):
             var = sum(daily_var.values())
             return ScenarioSummary(
-                id=id_, label=label,
+                id=id_,
+                label=label,
                 total_variable_eur=round(var, 2),
                 total_fixed_eur=round(fixed_total, 2),
                 total_eur=round(var + fixed_total, 2),
@@ -217,15 +228,19 @@ def get_strategy(
         for s in scenarios:
             s.savings_vs_no_saldering_eur = round(no_sald_total - s.total_eur, 2)
 
-        daily = []
+        daily_list = []
         for d in sorted(daily_dates):
-            daily.append(DailyComparison(
+            daily_list.append(DailyComparison(
                 date=d,
                 current_eur=round(daily_current[d] + VASTE_KOSTEN_PER_DAG_NETTO, 4),
                 no_saldering_eur=round(daily_no_sald[d] + VASTE_KOSTEN_PER_DAG_NETTO, 4),
                 curtailment_eur=round(daily_curtail[d] + VASTE_KOSTEN_PER_DAG_NETTO, 4),
                 battery_eur=round(daily_battery[d] + VASTE_KOSTEN_PER_DAG_NETTO, 4),
             ))
+
+        no_sald_var = sum(daily_no_sald.values())
+        battery_var = sum(daily_battery.values())
+        battery_savings_per_day = (no_sald_var - battery_var) / max(n_days, 1)
 
         response = StrategyResponse(
             range=range_,
@@ -234,7 +249,9 @@ def get_strategy(
             battery_kwh=battery_kwh,
             day_count=n_days,
             scenarios=scenarios,
-            daily=daily,
+            daily=daily_list,
+            battery_savings_per_day_eur=round(battery_savings_per_day, 4),
+            battery_overflow_kwh=round(battery_exp, 2),
         )
         _strategy_cache[cache_key] = response
         _strategy_stale[cache_key] = response
