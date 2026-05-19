@@ -24,14 +24,14 @@ _grid_trend_stale: dict = {}
 # Twee naamschema's per fase: nieuw (power_phase_N) en oud (active_power_lN).
 # Elk element is een lijst van patronen die op volgorde geprobeerd worden.
 _POWER_PATTERN_SETS = [
-    ["%_power_phase_1", "%active_power_l1%"],
-    ["%_power_phase_2", "%active_power_l2%"],
-    ["%_power_phase_3", "%active_power_l3%"],
+    ["%p1_meter%power_phase_1%", "%active_power_l1%"],
+    ["%p1_meter%power_phase_2%", "%active_power_l2%"],
+    ["%p1_meter%power_phase_3%", "%active_power_l3%"],
 ]
 _VOLTAGE_PATTERN_SETS = [
-    ["%meter_voltage_phase_1", "%active_voltage_l1%"],
-    ["%meter_voltage_phase_2", "%active_voltage_l2%"],
-    ["%meter_voltage_phase_3", "%active_voltage_l3%"],
+    ["%p1_meter%voltage_phase_1%", "%active_voltage_l1%"],
+    ["%p1_meter%voltage_phase_2%", "%active_voltage_l2%"],
+    ["%p1_meter%voltage_phase_3%", "%active_voltage_l3%"],
 ]
 
 _PHASE_LABELS = ["L1", "L2", "L3"]
