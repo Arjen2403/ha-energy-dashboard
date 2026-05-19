@@ -2,7 +2,9 @@
 
 Fase-entiteiten worden dynamisch ontdekt via states_meta zodat de code
 werkt ongeacht de exacte HomeWizard P1 entiteitnaam-versie.
-Verwacht: sensor.*active_power_l1/l2/l3* en sensor.*active_voltage_l1/l2/l3*
+Ondersteunt twee naamschema's:
+  - Nieuw: sensor.*_power_phase_1/2/3  en  sensor.*_voltage_phase_1/2/3
+  - Oud:   sensor.*active_power_l1/l2/l3  en  sensor.*active_voltage_l1/l2/l3
 """
 from datetime import datetime, timezone
 from typing import Optional
@@ -19,23 +21,37 @@ _grid_trend_cache: TTLCache = TTLCache(maxsize=1, ttl=60)
 _grid_live_stale: dict  = {}
 _grid_trend_stale: dict = {}
 
-# Kandidaat-patronen voor HomeWizard P1 fase-entiteiten (meerdere integratie-versies)
-_POWER_PATTERNS   = ["%active_power_l1%", "%active_power_l2%", "%active_power_l3%"]
-_VOLTAGE_PATTERNS = ["%active_voltage_l1%", "%active_voltage_l2%", "%active_voltage_l3%"]
+# Twee naamschema's per fase: nieuw (power_phase_N) en oud (active_power_lN).
+# Elk element is een lijst van patronen die op volgorde geprobeerd worden.
+_POWER_PATTERN_SETS = [
+    ["%_power_phase_1", "%active_power_l1%"],
+    ["%_power_phase_2", "%active_power_l2%"],
+    ["%_power_phase_3", "%active_power_l3%"],
+]
+_VOLTAGE_PATTERN_SETS = [
+    ["%meter_voltage_phase_1", "%active_voltage_l1%"],
+    ["%meter_voltage_phase_2", "%active_voltage_l2%"],
+    ["%meter_voltage_phase_3", "%active_voltage_l3%"],
+]
 
 _PHASE_LABELS = ["L1", "L2", "L3"]
 
 
-def _discover_entities(conn, patterns: list[str]) -> list[Optional[str]]:
-    """Zoek per patroon één entiteitnaam op; retourneert [l1, l2, l3] of None per fase."""
+def _discover_entities(conn, pattern_sets: list[list[str]]) -> list[Optional[str]]:
+    """Zoek per fase één entiteitnaam op via meerdere fallback-patronen."""
     result = []
-    for pat in patterns:
-        row = conn.execute(
-            "SELECT entity_id FROM states_meta WHERE entity_id LIKE ? "
-            "ORDER BY entity_id LIMIT 1",
-            (pat,),
-        ).fetchone()
-        result.append(row["entity_id"] if row else None)
+    for patterns in pattern_sets:
+        found = None
+        for pat in patterns:
+            row = conn.execute(
+                "SELECT entity_id FROM states_meta WHERE entity_id LIKE ? "
+                "ORDER BY entity_id LIMIT 1",
+                (pat,),
+            ).fetchone()
+            if row:
+                found = row["entity_id"]
+                break
+        result.append(found)
     return result
 
 
@@ -116,8 +132,8 @@ def get_grid_live():
 
     try:
         with ha_db() as conn:
-            power_ids   = _discover_entities(conn, _POWER_PATTERNS)
-            voltage_ids = _discover_entities(conn, _VOLTAGE_PATTERNS)
+            power_ids   = _discover_entities(conn, _POWER_PATTERN_SETS)
+            voltage_ids = _discover_entities(conn, _VOLTAGE_PATTERN_SETS)
             all_ids = [e for e in power_ids + voltage_ids if e]
             states = _query_latest(conn, all_ids) if all_ids else {}
 
@@ -130,12 +146,11 @@ def get_grid_live():
             if w is not None:
                 powers.append(w)
 
-        # Onbalans = verschil max-min als % van |max| (alleen positieve waarden)
-        pos_powers = [p for p in powers if p is not None]
+        # Onbalans = spread als % van hoogste absolute waarde (alle fasen beschikbaar)
         imbalance_pct = None
-        if len(pos_powers) == 3:
-            spread = max(pos_powers) - min(pos_powers)
-            denom = max(abs(p) for p in pos_powers)
+        if len(powers) == 3:
+            spread = max(powers) - min(powers)
+            denom = max(abs(p) for p in powers)
             imbalance_pct = round(spread / denom * 100, 1) if denom > 0 else 0.0
 
         result = {
@@ -164,7 +179,7 @@ def get_grid_trend():
 
     try:
         with ha_db() as conn:
-            power_ids = _discover_entities(conn, _POWER_PATTERNS)
+            power_ids = _discover_entities(conn, _POWER_PATTERN_SETS)
             trend = _query_6h_trend(conn, power_ids)
 
         result = {"trend": trend, "entities": power_ids}
