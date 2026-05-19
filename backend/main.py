@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from .routers import costs, flows, heatpump, meta, overview, solar, strategy
+from .routers import costs, flows, grid, heatpump, meta, overview, solar, strategy
 
 app = FastAPI(
     title="HA Energy Dashboard",
@@ -17,5 +17,6 @@ app.include_router(costs.router, prefix="/api")
 app.include_router(heatpump.router, prefix="/api")
 app.include_router(solar.router, prefix="/api")
 app.include_router(strategy.router, prefix="/api")
+app.include_router(grid.router, prefix="/api")
 
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

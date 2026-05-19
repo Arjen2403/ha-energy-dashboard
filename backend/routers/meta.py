@@ -9,6 +9,17 @@ from ..db import ha_db
 router = APIRouter()
 
 
+@router.get("/entities")
+def entities(prefix: str = "sensor.p1_meter"):
+    """Geeft entity_ids terug die beginnen met `prefix` — handig voor discovery."""
+    with ha_db() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT entity_id FROM states_meta WHERE entity_id LIKE ? ORDER BY entity_id",
+            (f"{prefix}%",),
+        ).fetchall()
+    return {"prefix": prefix, "entities": [r["entity_id"] for r in rows]}
+
+
 @router.get("/health")
 def health():
     """Bevestigt dat de app draait en de DB bereikbaar is."""

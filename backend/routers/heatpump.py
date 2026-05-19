@@ -9,7 +9,6 @@ from zoneinfo import ZoneInfo
 
 from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
 
 from ..db import ha_db
 from ..views import query_hourly_heatpump
@@ -21,6 +20,12 @@ _heatpump_stale: dict = {}
 
 NL_TZ = ZoneInfo("Europe/Amsterdam")
 
+
+class DailyHeatpump:
+    pass
+
+
+from pydantic import BaseModel
 
 class DailyHeatpump(BaseModel):
     date: str
@@ -86,6 +91,77 @@ def _resolve_range(range_name: str, from_iso: Optional[str], to_iso: Optional[st
     return _floor_to_hour(int(from_dt.timestamp())), _floor_to_hour(int(to_dt.timestamp()))
 
 
+@router.get("/heatpump/live")
+def get_heatpump_live():
+    """Live warmtepomp status: huidige temperaturen, delta-T en of de pomp draait.
+
+    Noot: door de EMS-ESP naming swap is boiler_return_temperature de echte aanvoer
+    en boiler_current_flow_temperature de echte retour — identiek aan de views.py fix.
+    """
+    import time as _time
+    ENTITIES = [
+        "sensor.boiler_return_temperature",
+        "sensor.boiler_current_flow_temperature",
+        "sensor.boiler_outside_temperature",
+    ]
+    with ha_db() as conn:
+        placeholders = ",".join(["?"] * len(ENTITIES))
+        rows = conn.execute(f"""
+            WITH latest AS (
+                SELECT s.metadata_id, MAX(s.last_updated_ts) AS ts
+                FROM states s
+                JOIN states_meta sm ON sm.metadata_id = s.metadata_id
+                WHERE sm.entity_id IN ({placeholders})
+                GROUP BY s.metadata_id
+            )
+            SELECT sm.entity_id, s.state
+            FROM states s
+            JOIN states_meta sm ON sm.metadata_id = s.metadata_id
+            JOIN latest l ON l.metadata_id = s.metadata_id AND l.ts = s.last_updated_ts
+        """, ENTITIES).fetchall()
+
+        now_ts = int(_time.time())
+        energy_rows = conn.execute("""
+            SELECT s.state, s.last_updated_ts AS ts
+            FROM states s
+            JOIN states_meta sm ON sm.metadata_id = s.metadata_id
+            WHERE sm.entity_id = 'sensor.boiler_total_energy_consumption'
+              AND s.last_updated_ts >= ?
+              AND s.state NOT IN ('unknown', 'unavailable', '')
+            ORDER BY s.last_updated_ts
+        """, (now_ts - 15 * 60,)).fetchall()
+
+    def safe_float(s):
+        try:
+            return float(s) if s not in (None, "unknown", "unavailable", "") else None
+        except Exception:
+            return None
+
+    states = {r["entity_id"]: safe_float(r["state"]) for r in rows}
+    flow_c    = states.get("sensor.boiler_return_temperature")
+    return_c  = states.get("sensor.boiler_current_flow_temperature")
+    outside_c = states.get("sensor.boiler_outside_temperature")
+    delta_t   = round(flow_c - return_c, 1) if flow_c is not None and return_c is not None else None
+
+    pump_running = False
+    if len(energy_rows) >= 2:
+        try:
+            dt_h = (energy_rows[-1]["ts"] - energy_rows[0]["ts"]) / 3600.0
+            delta_kwh = float(energy_rows[-1]["state"]) - float(energy_rows[0]["state"])
+            pump_running = dt_h > 0 and delta_kwh > 0
+        except Exception:
+            pass
+
+    return {
+        "flow_temp_c":    flow_c,
+        "return_temp_c":  return_c,
+        "outside_temp_c": outside_c,
+        "delta_t_c":      delta_t,
+        "pump_running":   pump_running,
+        "delta_t_alert":  pump_running and delta_t is not None and delta_t < 2.0,
+    }
+
+
 @router.get("/heatpump", response_model=HeatpumpResponse)
 def get_heatpump(
     range: Literal["today", "7d", "30d", "ytd", "custom"] = Query("7d"),
@@ -145,10 +221,10 @@ def get_heatpump(
         days = []
         for date_str in sorted(daily.keys()):
             b = daily[date_str]
-            avg_out = avg(b["outside_temps"])
-            avg_flow = avg(b["flow_temps"])
+            avg_out    = avg(b["outside_temps"])
+            avg_flow   = avg(b["flow_temps"])
             avg_return = avg(b["return_temps"])
-            delta_t = avg_flow - avg_return if avg_flow is not None and avg_return is not None else None
+            delta_t    = avg_flow - avg_return if avg_flow is not None and avg_return is not None else None
 
             days.append(DailyHeatpump(
                 date=date_str,

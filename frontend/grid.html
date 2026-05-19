@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Energy">
+    <meta name="theme-color" content="#3b82f6">
+    <title>Grid / Fases — HA Energy Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.13.0/dist/cdn.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-900">
+
+<nav class="bg-white shadow px-6 py-3 flex gap-6 mb-6 flex-wrap">
+    <span class="font-bold text-blue-600">HA Energy Dashboard</span>
+    <a href="/now.html" class="text-gray-500 hover:text-blue-600">Now</a>
+    <a href="/flows.html" class="text-gray-500 hover:text-blue-600">Energy Flows</a>
+    <a href="/costs.html" class="text-gray-500 hover:text-blue-600">Costs</a>
+    <a href="/heatpump.html" class="text-gray-500 hover:text-blue-600">Heat Pump</a>
+    <a href="/solar.html" class="text-gray-500 hover:text-blue-600">Solar</a>
+    <a href="/strategy.html" class="text-gray-500 hover:text-blue-600">Strategie</a>
+    <a href="/grid.html" class="text-blue-600 font-semibold">Grid / Fases</a>
+</nav>
+
+<div class="max-w-6xl mx-auto px-6" x-data="gridApp()" x-init="load()">
+
+    <h1 class="text-2xl font-bold mb-1">Grid / Fases</h1>
+    <p class="text-sm text-gray-500 italic mb-6">Live fase-verdeling van het net. Toont vermogen per fase (L1/L2/L3) en onbalans. Positief = import, negatief = export. Ververst elke 30 seconden.</p>
+
+    <div x-show="error" class="bg-red-50 border border-red-200 text-red-700 p-4 rounded mb-4" x-text="error"></div>
+
+    <!-- Fase KPI cards -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <template x-for="p in phases" :key="p.label">
+            <div class="bg-white p-4 rounded shadow">
+                <div class="text-sm text-gray-500" x-text="'Fase ' + p.label"></div>
+                <div class="text-2xl font-bold"
+                     :class="p.power_w === null ? 'text-gray-400' :
+                             p.power_w > 0 ? 'text-blue-600' : 'text-green-600'"
+                     x-text="p.power_w !== null ? Math.round(p.power_w) + ' W' : '–'"></div>
+                <div class="text-xs text-gray-400 mt-1"
+                     x-text="p.voltage_v !== null ? p.voltage_v.toFixed(1) + ' V' : ''"></div>
+            </div>
+        </template>
+
+        <!-- Imbalance card -->
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Onbalans</div>
+            <div class="text-2xl font-bold"
+                 :class="imbalance_pct === null ? 'text-gray-400' :
+                         imbalance_pct < 10 ? 'text-green-600' :
+                         imbalance_pct < 25 ? 'text-yellow-500' : 'text-red-600'"
+                 x-text="imbalance_pct !== null ? imbalance_pct.toFixed(1) + ' %' : '–'"></div>
+            <div class="text-xs mt-1"
+                 :class="imbalance_pct === null ? 'text-gray-400' :
+                         imbalance_pct < 10 ? 'text-green-500' :
+                         imbalance_pct < 25 ? 'text-yellow-500' : 'text-red-500'"
+                 x-text="imbalance_pct === null ? '' :
+                         imbalance_pct < 10 ? 'Goed' :
+                         imbalance_pct < 25 ? 'Matig' : 'Hoog'"></div>
+        </div>
+    </div>
+
+    <!-- Imbalance alert -->
+    <div x-show="imbalance_pct !== null && imbalance_pct >= 25"
+         class="bg-yellow-50 border border-yellow-300 text-yellow-800 px-4 py-3 rounded mb-6 flex items-start gap-2">
+        <span class="text-lg">⚠️</span>
+        <div>
+            <div class="font-semibold">Hoge fasonbalans (<span x-text="imbalance_pct !== null ? imbalance_pct.toFixed(1) : ''"></span>%)</div>
+            <div class="text-sm">Grote ongelijkmatige belasting over de drie fasen kan leiden tot extra netkosten of instabiliteit. Controleer welk apparaat ongelijk belast.</div>
+        </div>
+    </div>
+
+    <!-- 6h trend chart -->
+    <div class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm font-semibold text-gray-700 mb-1">Vermogen per fase — laatste 6 uur (5-min gemiddelden)</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Vermogen in W per fase. Positief = importeren van het net, negatief = terugleveren. Een goed gebalanceerd huis heeft drie lijnen die dicht bij elkaar lopen.</p>
+        <div id="phase-trend-chart" class="h-72"></div>
+    </div>
+
+    <!-- Phase balance bar chart (live) -->
+    <div class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm font-semibold text-gray-700 mb-1">Huidige fase-verdeling</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Live staafdiagram van het vermogen per fase. Ideaal zijn alle drie even hoog.</p>
+        <div id="phase-bar-chart" class="h-48"></div>
+    </div>
+
+    <!-- Voltage cards (if available) -->
+    <div x-show="phases.some(p => p.voltage_v !== null)" class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm font-semibold text-gray-700 mb-3">Spanning per fase</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Netspanning per fase in Volt. Nominaal 230 V. Waarden buiten 207–253 V (±10%) wijzen op netproblemen.</p>
+        <div class="grid grid-cols-3 gap-4">
+            <template x-for="p in phases" :key="p.label + '_v'">
+                <div x-show="p.voltage_v !== null" class="text-center">
+                    <div class="text-xs text-gray-500" x-text="'Fase ' + p.label"></div>
+                    <div class="text-xl font-semibold"
+                         :class="p.voltage_v === null ? '' :
+                                 (p.voltage_v >= 207 && p.voltage_v <= 253) ? 'text-green-600' : 'text-red-600'"
+                         x-text="p.voltage_v !== null ? p.voltage_v.toFixed(1) + ' V' : ''"></div>
+                </div>
+            </template>
+        </div>
+    </div>
+
+    <div class="text-xs text-gray-400 text-right mt-2"
+         x-text="lastUpdated ? 'Bijgewerkt: ' + lastUpdated : ''"></div>
+
+</div>
+
+<script>
+const PHASE_COLORS = { L1: '#3b82f6', L2: '#f59e0b', L3: '#10b981' };
+
+function gridApp() {
+    return {
+        phases: [{label:'L1',power_w:null,voltage_v:null},
+                 {label:'L2',power_w:null,voltage_v:null},
+                 {label:'L3',power_w:null,voltage_v:null}],
+        imbalance_pct: null,
+        total_w: null,
+        error: null,
+        lastUpdated: null,
+        trendLoaded: false,
+
+        async load() {
+            await Promise.all([this.loadLive(), this.trendLoaded ? Promise.resolve() : this.loadTrend()]);
+        },
+
+        async loadLive() {
+            try {
+                const res = await fetch('/api/grid/live');
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                this.phases = data.phases.length ? data.phases :
+                    [{label:'L1',power_w:null,voltage_v:null},
+                     {label:'L2',power_w:null,voltage_v:null},
+                     {label:'L3',power_w:null,voltage_v:null}];
+                this.imbalance_pct = data.imbalance_pct;
+                this.total_w = data.total_w;
+                this.lastUpdated = new Date().toLocaleTimeString('nl-NL');
+                this.error = null;
+                this.$nextTick(() => this.drawBar());
+            } catch(e) {
+                this.error = `Fout bij laden: ${e.message}`;
+            }
+        },
+
+        async loadTrend() {
+            try {
+                const res = await fetch('/api/grid/trend');
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                this.trendLoaded = true;
+                this.$nextTick(() => this.drawTrend(data.trend));
+            } catch(e) {
+                console.warn('Trend load failed:', e.message);
+            }
+        },
+
+        drawBar() {
+            const labels = this.phases.map(p => 'Fase ' + p.label);
+            const values = this.phases.map(p => p.power_w ?? 0);
+            const colors = this.phases.map(p => PHASE_COLORS[p.label] || '#6b7280');
+            Plotly.newPlot('phase-bar-chart', [{
+                type: 'bar',
+                x: labels,
+                y: values,
+                marker: { color: colors },
+                text: values.map(v => Math.round(v) + ' W'),
+                textposition: 'outside',
+                hovertemplate: '%{x}: %{y} W<extra></extra>',
+            }], {
+                yaxis: { title: 'Vermogen (W)', zeroline: true, zerolinecolor: '#9ca3af' },
+                margin: { t: 10, l: 50, r: 20, b: 40 },
+                showlegend: false,
+            }, { responsive: true });
+        },
+
+        drawTrend(trend) {
+            if (!trend || trend.length === 0) return;
+            const ts = trend.map(r => r.ts);
+            Plotly.newPlot('phase-trend-chart', [
+                { type:'scatter', mode:'lines', name:'L1',
+                  x:ts, y:trend.map(r=>r.l1_w),
+                  line:{color:PHASE_COLORS.L1, width:2} },
+                { type:'scatter', mode:'lines', name:'L2',
+                  x:ts, y:trend.map(r=>r.l2_w),
+                  line:{color:PHASE_COLORS.L2, width:2} },
+                { type:'scatter', mode:'lines', name:'L3',
+                  x:ts, y:trend.map(r=>r.l3_w),
+                  line:{color:PHASE_COLORS.L3, width:2} },
+            ], {
+                yaxis: { title:'W', zeroline:true, zerolinecolor:'#9ca3af' },
+                xaxis: { type:'date' },
+                margin: { t:10, l:50, r:20, b:40 },
+                legend: { orientation:'h', y:-0.2 },
+            }, { responsive:true });
+        },
+    };
+}
+
+// Auto-refresh live data every 30s
+document.addEventListener('alpine:init', () => {
+    setInterval(() => {
+        const app = document.querySelector('[x-data]')?._x_dataStack?.[0];
+        if (app) app.loadLive();
+    }, 30000);
+});
+</script>
+
+</body>
+</html>

@@ -10,14 +10,14 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Energy">
     <meta name="theme-color" content="#3b82f6">
-    <title>Heat Pump — HA Energy Dashboard</title>
+    <title>Warmtepomp — HA Energy Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
     <script defer src="https://unpkg.com/alpinejs@3.13.0/dist/cdn.min.js"></script>
 </head>
 <body class="bg-gray-50 text-gray-900">
 
-<nav class="bg-white shadow px-6 py-3 flex gap-6 mb-6">
+<nav class="bg-white shadow px-6 py-3 flex gap-6 mb-6 flex-wrap">
     <span class="font-bold text-blue-600">HA Energy Dashboard</span>
     <a href="/now.html" class="text-gray-500 hover:text-blue-600">Now</a>
     <a href="/flows.html" class="text-gray-500 hover:text-blue-600">Energy Flows</a>
@@ -25,145 +25,206 @@
     <a href="/heatpump.html" class="text-blue-600 font-semibold">Heat Pump</a>
     <a href="/solar.html" class="text-gray-500 hover:text-blue-600">Solar</a>
     <a href="/strategy.html" class="text-gray-500 hover:text-blue-600">Strategie</a>
+    <a href="/grid.html" class="text-gray-500 hover:text-blue-600">Grid / Fases</a>
 </nav>
 
-<div class="max-w-6xl mx-auto px-6" x-data="hpApp()" x-init="load()">
+<div class="max-w-6xl mx-auto px-6" x-data="heatpumpApp()" x-init="load()">
 
-    <h1 class="text-2xl font-bold mb-4">Heat Pump</h1>
+    <h1 class="text-2xl font-bold mb-1">Warmtepomp Analyse</h1>
+    <p class="text-sm text-gray-500 italic mb-4">Dagelijkse prestaties: verbruik, levering en COP per dag.</p>
+
+    <!-- Health score banner -->
+    <div x-show="health !== null" class="rounded-lg px-5 py-4 mb-4 flex items-center gap-4"
+         :class="health === null ? 'bg-gray-100' :
+                 health.score >= 95 ? 'bg-green-50 border border-green-200' :
+                 health.score >= 85 ? 'bg-yellow-50 border border-yellow-200' :
+                 health.score >= 75 ? 'bg-orange-50 border border-orange-200' :
+                                      'bg-red-50 border border-red-200'">
+        <div class="text-4xl font-bold"
+             :class="health === null ? 'text-gray-400' :
+                     health.score >= 95 ? 'text-green-600' :
+                     health.score >= 85 ? 'text-yellow-600' :
+                     health.score >= 75 ? 'text-orange-500' : 'text-red-600'"
+             x-text="health ? health.score + '%' : '–'"></div>
+        <div>
+            <div class="font-semibold text-sm"
+                 :class="health === null ? 'text-gray-500' :
+                         health.score >= 95 ? 'text-green-700' :
+                         health.score >= 85 ? 'text-yellow-700' :
+                         health.score >= 75 ? 'text-orange-600' : 'text-red-700'"
+                 x-text="health ? health.label : ''"></div>
+            <div class="text-xs text-gray-500 mt-0.5"
+                 x-text="health ? 'COP afgelopen 7d: ' + (health.actual_cop ? health.actual_cop.toFixed(2) : '–') +
+                         ' · Verwacht bij ' + (health.avg_outside !== null ? health.avg_outside.toFixed(1) : '–') +
+                         '°C buitentemp: ' + (health.expected_cop ? health.expected_cop.toFixed(2) : '–') : ''"></div>
+        </div>
+    </div>
+
+    <!-- Delta-T alert -->
+    <div x-show="live && live.delta_t_alert"
+         class="bg-orange-50 border border-orange-300 text-orange-800 px-4 py-3 rounded mb-4 flex items-start gap-2">
+        <span class="text-lg">⚠️</span>
+        <div>
+            <div class="font-semibold">Lage delta-T waarschuwing</div>
+            <div class="text-sm">Delta-T is
+                <span x-text="live && live.delta_t_c !== null ? live.delta_t_c.toFixed(1) + '°C' : '–'"></span>
+                — dit is erg laag terwijl de pomp draait. Controleer de flow/retour aansluiting of circulatiepomp.
+            </div>
+        </div>
+    </div>
 
     <!-- Range selector -->
-    <div class="mb-6 flex gap-2 flex-wrap">
+    <div class="flex flex-wrap gap-2 mb-6">
         <template x-for="r in ranges" :key="r.value">
-            <button
-                @click="setRange(r.value)"
-                :class="range === r.value
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white text-gray-700 hover:bg-gray-100'"
-                class="px-4 py-2 rounded border border-gray-300 transition">
-                <span x-text="r.label"></span>
-            </button>
+            <button @click="range = r.value; load()"
+                    :class="range === r.value
+                        ? 'bg-blue-600 text-white px-3 py-1 rounded text-sm font-medium'
+                        : 'bg-white border border-gray-300 text-gray-700 px-3 py-1 rounded text-sm hover:bg-gray-50'"
+                    x-text="r.label"></button>
         </template>
     </div>
 
-    <div x-show="loading" class="bg-white p-6 rounded shadow text-gray-500">Laden...</div>
-    <div x-show="error" class="bg-red-50 border border-red-200 text-red-700 p-4 rounded mb-4"
-         x-text="error"></div>
+    <div x-show="error" class="bg-red-50 border border-red-200 text-red-700 p-4 rounded mb-4" x-text="error"></div>
+    <div x-show="loading" class="text-gray-500 text-sm mb-4">Laden…</div>
 
     <!-- KPI cards -->
-    <div x-show="!loading && days.length > 0"
-         class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6" x-show="!loading && days.length">
         <div class="bg-white p-4 rounded shadow">
-            <div class="text-sm text-gray-500">Verbruikt</div>
-            <div class="text-xl font-semibold" x-text="totals.consumption.toFixed(1) + ' kWh'"></div>
+            <div class="text-sm text-gray-500">Totaal verbruik</div>
+            <div class="text-2xl font-bold text-blue-700" x-text="totals.consumption ? totals.consumption.toFixed(1) + ' kWh' : '–'"></div>
         </div>
         <div class="bg-white p-4 rounded shadow">
-            <div class="text-sm text-gray-500">Warmte uit</div>
-            <div class="text-xl font-semibold" x-text="totals.supplied.toFixed(1) + ' kWh'"></div>
+            <div class="text-sm text-gray-500">Totaal geleverd</div>
+            <div class="text-2xl font-bold text-green-700" x-text="totals.supplied ? totals.supplied.toFixed(1) + ' kWh' : '–'"></div>
         </div>
         <div class="bg-white p-4 rounded shadow">
-            <div class="text-sm text-gray-500">COP gem. (range)</div>
-            <div class="text-xl font-semibold text-red-600" x-text="totals.cop ? totals.cop.toFixed(2) : '–'"></div>
+            <div class="text-sm text-gray-500">Gemiddelde COP</div>
+            <div class="text-2xl font-bold" x-text="totals.cop ? totals.cop.toFixed(2) : '–'"></div>
         </div>
         <div class="bg-white p-4 rounded shadow">
-            <div class="text-sm text-gray-500">Buiten gem.</div>
-            <div class="text-xl font-semibold" x-text="totals.outside !== null ? totals.outside.toFixed(1) + ' °C' : '–'"></div>
+            <div class="text-sm text-gray-500">Gem. buitentemp</div>
+            <div class="text-2xl font-bold" x-text="totals.outside !== null ? totals.outside.toFixed(1) + ' °C' : '–'"></div>
         </div>
     </div>
 
-    <!-- Chart 1: COP-trends -->
-    <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
-        <h2 class="text-sm text-gray-500 mb-2">Daily COP — totaal, heating, DHW (lijn) + buitentemp (rechteras)</h2>
-        <p class="text-xs text-gray-500 italic mb-3">Coefficient of Performance (COP) per dag = warmte uit / elektriciteit in. Hoger = efficiënter. Rood = totale COP, blauw streep = verwarming, paars stippel = warmwater. Grijze lijn (rechteras) = buitentemp. Bij koudere dagen daalt de COP doorgaans.</p>
-        <div id="cop-trends-chart" class="h-72"></div>
+    <!-- Live status -->
+    <div x-show="live" class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm font-semibold text-gray-700 mb-3">Live status</h2>
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+            <div>
+                <div class="text-xs text-gray-500">Aanvoer</div>
+                <div class="font-semibold" x-text="live && live.flow_temp_c !== null ? live.flow_temp_c.toFixed(1) + ' °C' : '–'"></div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-500">Retour</div>
+                <div class="font-semibold" x-text="live && live.return_temp_c !== null ? live.return_temp_c.toFixed(1) + ' °C' : '–'"></div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-500">Delta-T</div>
+                <div class="font-semibold"
+                     :class="live && live.delta_t_c !== null ? (live.delta_t_c < 2 ? 'text-orange-500' : 'text-gray-900') : ''"
+                     x-text="live && live.delta_t_c !== null ? live.delta_t_c.toFixed(1) + ' °C' : '–'"></div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-500">Buiten</div>
+                <div class="font-semibold" x-text="live && live.outside_temp_c !== null ? live.outside_temp_c.toFixed(1) + ' °C' : '–'"></div>
+            </div>
+            <div>
+                <div class="text-xs text-gray-500">Status</div>
+                <div class="font-semibold"
+                     :class="live && live.pump_running ? 'text-green-600' : 'text-gray-400'"
+                     x-text="live ? (live.pump_running ? 'Actief' : 'Standby') : '–'"></div>
+            </div>
+        </div>
     </div>
 
-    <!-- Chart 2: COP vs buitentemp scatter -->
-    <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
-        <h2 class="text-sm text-gray-500 mb-2">COP totaal vs gemiddelde buitentemperatuur (1 punt per dag)</h2>
-        <p class="text-xs text-gray-500 italic mb-3">Één punt per dag — X is gemiddelde buitentemp, Y is COP totaal. Toont of jouw warmtepomp voorspelbaar reageert op buitentemperatuur. Een dalende trend van links naar rechts is normaal.</p>
-        <div id="cop-vs-temp-chart" class="h-72"></div>
+    <!-- Charts -->
+    <div class="bg-white p-4 rounded shadow mb-6" x-show="!loading && days.length">
+        <h2 class="text-sm font-semibold text-gray-700 mb-1">Verbruik vs levering (kWh/dag)</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Blauw = elektriciteitsverbruik pomp. Groen = thermische energie geleverd (verwarming + tapwater). Het verschil is de "gratis" warmte uit de lucht.</p>
+        <div id="kwh-chart" class="h-64"></div>
     </div>
 
-    <!-- Chart 3: Heating vs DHW consumption -->
-    <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
-        <h2 class="text-sm text-gray-500 mb-2">Verbruik per dag — heating vs DHW (gestapeld)</h2>
-        <p class="text-xs text-gray-500 italic mb-3">Verbruik van de warmtepomp uitgesplitst in verwarming (blauw) en warm water/DHW (paars), per dag. Toont waar de pomp z'n energie aan kwijt is.</p>
-        <div id="heating-dhw-chart" class="h-72"></div>
+    <div class="bg-white p-4 rounded shadow mb-6" x-show="!loading && days.length">
+        <h2 class="text-sm font-semibold text-gray-700 mb-1">COP per dag</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Coefficient of Performance: hoeveel kWh warmte per kWh elektriciteit. Hoger = efficiënter. Typisch 3–6 voor lucht/water warmtepompen.</p>
+        <div id="cop-chart" class="h-64"></div>
     </div>
 
-    <!-- Chart 4: Flow/return/outside temperatures -->
-    <div x-show="!loading && days.length > 0" class="bg-white p-4 rounded shadow mb-6">
-        <h2 class="text-sm text-gray-500 mb-2">Gemiddelde temperaturen per dag — flow / return / buiten</h2>
-        <p class="text-xs text-gray-500 italic mb-3">Drie temperatuurlijnen per dag. Rood = aanvoer (warm water uit pomp naar verwarming). Blauw = retour (terug naar pomp). Grijs = buiten. Verschil aanvoer-retour (ΔT) zegt iets over de warmtevraag in huis.</p>
-        <div id="temps-chart" class="h-72"></div>
+    <div class="bg-white p-4 rounded shadow mb-6" x-show="!loading && days.length">
+        <h2 class="text-sm font-semibold text-gray-700 mb-1">Verwarming vs tapwater (kWh/dag)</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Oranje = ruimteverwarming. Paars = tapwaterverwarming (DHW). Laat zien hoeveel de pomp voor elk doel werkt.</p>
+        <div id="split-chart" class="h-64"></div>
     </div>
 
-    <!-- Detail table -->
-    <div x-show="!loading && days.length > 0" class="bg-white rounded shadow overflow-x-auto">
-        <table class="w-full text-sm">
-            <thead class="bg-gray-50 text-gray-700">
-                <tr>
-                    <th class="text-left px-4 py-2">Datum</th>
-                    <th class="text-right px-4 py-2">Cons.</th>
-                    <th class="text-right px-4 py-2">Supp.</th>
-                    <th class="text-right px-4 py-2">COP</th>
-                    <th class="text-right px-4 py-2">COP heat</th>
-                    <th class="text-right px-4 py-2">COP DHW</th>
-                    <th class="text-right px-4 py-2">Buiten</th>
-                    <th class="text-right px-4 py-2">Flow</th>
-                    <th class="text-right px-4 py-2">Return</th>
-                </tr>
-            </thead>
-            <tbody>
-                <template x-for="d in days" :key="d.date">
-                    <tr class="border-t hover:bg-gray-50">
-                        <td class="px-4 py-2" x-text="d.date"></td>
-                        <td class="px-4 py-2 text-right" x-text="d.consumption_total_kwh.toFixed(1)"></td>
-                        <td class="px-4 py-2 text-right" x-text="d.supplied_total_kwh.toFixed(1)"></td>
-                        <td class="px-4 py-2 text-right text-red-600 font-semibold"
-                            x-text="d.cop_total !== null ? d.cop_total.toFixed(2) : '–'"></td>
-                        <td class="px-4 py-2 text-right" x-text="d.cop_heating !== null ? d.cop_heating.toFixed(2) : '–'"></td>
-                        <td class="px-4 py-2 text-right" x-text="d.cop_dhw !== null ? d.cop_dhw.toFixed(2) : '–'"></td>
-                        <td class="px-4 py-2 text-right" x-text="d.avg_outside_temp_c !== null ? d.avg_outside_temp_c.toFixed(1) + '°' : '–'"></td>
-                        <td class="px-4 py-2 text-right" x-text="d.avg_flow_temp_c !== null ? d.avg_flow_temp_c.toFixed(1) + '°' : '–'"></td>
-                        <td class="px-4 py-2 text-right" x-text="d.avg_return_temp_c !== null ? d.avg_return_temp_c.toFixed(1) + '°' : '–'"></td>
-                    </tr>
-                </template>
-            </tbody>
-        </table>
+    <div class="bg-white p-4 rounded shadow mb-6" x-show="!loading && days.length && hasTempData">
+        <h2 class="text-sm font-semibold text-gray-700 mb-1">COP vs buitentemperatuur (scatter)</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Elke stip is één dag. Hogere buitentemperatuur → hogere COP (minder temperatuurverschil te overbruggen). De stippellijn toont de verwachte COP op basis van de afgelopen 30 dagen.</p>
+        <div id="scatter-chart" class="h-64"></div>
     </div>
 
+    <div class="bg-white p-4 rounded shadow mb-6" x-show="!loading && days.length && hasTempData">
+        <h2 class="text-sm font-semibold text-gray-700 mb-1">Temperaturen (°C)</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Aanvoer (blauw), retour (groen) en buiten (grijs) per dag. Delta-T = aanvoer minus retour; ideaal 5–10 °C.</p>
+        <div id="temp-chart" class="h-64"></div>
+    </div>
+
+    <div class="text-xs text-gray-400 text-right mt-2"
+         x-text="lastUpdated ? 'Bijgewerkt: ' + lastUpdated : ''"></div>
 </div>
 
 <script>
-function hpApp() {
+function heatpumpApp() {
     return {
         range: '7d',
         ranges: [
             { value: 'today', label: 'Vandaag' },
-            { value: '7d', label: '7 dagen' },
-            { value: '30d', label: '30 dagen' },
-            { value: 'ytd', label: 'YTD' },
+            { value: '7d',    label: '7 dagen' },
+            { value: '30d',   label: '30 dagen' },
+            { value: 'ytd',   label: 'Dit jaar' },
         ],
+        days: [],
+        totals: { consumption: null, supplied: null, cop: null, outside: null },
+        live: null,
+        health: null,
+        data30d: null,
+        loaded30d: false,
         loading: false,
         error: null,
-        days: [],
-        totals: { consumption: 0, supplied: 0, cop: null, outside: null },
+        lastUpdated: null,
 
-        async setRange(r) {
-            this.range = r;
-            await this.load();
+        get hasTempData() {
+            return this.days.some(d => d.avg_outside_temp_c !== null);
         },
 
         async load() {
             this.loading = true;
             this.error = null;
             try {
-                const res = await fetch(`/api/heatpump?range=${this.range}`);
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const data = await res.json();
-                this.days = data.days;
+                const rangePromise = fetch(`/api/heatpump?range=${this.range}`)
+                    .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); });
+                const livePromise = fetch('/api/heatpump/live')
+                    .then(r => r.ok ? r.json() : null)
+                    .catch(() => null);
+                const data30dPromise = this.loaded30d
+                    ? Promise.resolve(this.data30d)
+                    : fetch('/api/heatpump?range=30d')
+                        .then(r => r.ok ? r.json() : null)
+                        .catch(() => null);
+
+                const [data, liveData, data30] = await Promise.all([rangePromise, livePromise, data30dPromise]);
+
+                this.days = data.days || [];
+                this.live = liveData;
+
+                if (!this.loaded30d) {
+                    this.data30d = data30;
+                    this.loaded30d = true;
+                }
+
                 this.computeTotals();
+                this.computeHealth();
+                this.lastUpdated = new Date().toLocaleTimeString('nl-NL');
                 this.$nextTick(() => this.draw());
             } catch (e) {
                 this.error = `Fout bij laden: ${e.message}`;
@@ -188,77 +249,175 @@ function hpApp() {
             };
         },
 
+        computeHealth() {
+            // Linear regression on 30d data: COP = a + b * T_outside
+            const src = this.data30d ? this.data30d.days : [];
+            const pts = src.filter(d =>
+                d.avg_outside_temp_c !== null &&
+                d.cop_total !== null &&
+                d.consumption_total_kwh > 0.5
+            );
+
+            if (pts.length < 5) { this.health = null; return; }
+
+            // Least-squares fit
+            let n = pts.length, sx = 0, sy = 0, sxy = 0, sx2 = 0;
+            for (const p of pts) {
+                sx  += p.avg_outside_temp_c;
+                sy  += p.cop_total;
+                sxy += p.avg_outside_temp_c * p.cop_total;
+                sx2 += p.avg_outside_temp_c * p.avg_outside_temp_c;
+            }
+            const b = (n * sxy - sx * sy) / (n * sx2 - sx * sx);
+            const a = (sy - b * sx) / n;
+
+            // Last 7d average COP and avg outside temp
+            const recent = this.days.filter(d =>
+                d.cop_total !== null && d.avg_outside_temp_c !== null && d.consumption_total_kwh > 0.5
+            );
+            if (recent.length === 0) { this.health = null; return; }
+
+            const avg_outside = recent.reduce((s,d) => s + d.avg_outside_temp_c, 0) / recent.length;
+            const actual_cop  = recent.reduce((s,d) => s + d.cop_total, 0) / recent.length;
+            const expected_cop = a + b * avg_outside;
+
+            const score = expected_cop > 0
+                ? Math.round(Math.min(120, (actual_cop / expected_cop) * 100))
+                : null;
+
+            let label;
+            if      (score >= 95) label = 'Uitstekend — warmtepomp presteert conform of boven verwachting';
+            else if (score >= 85) label = 'Goed — lichte afwijking, geen actie nodig';
+            else if (score >= 75) label = 'Matig — COP valt lager uit dan verwacht, houd dit in de gaten';
+            else                  label = 'Slecht — COP significant lager dan verwacht, onderzoek aanbevolen';
+
+            this.health = { score, label, actual_cop, expected_cop, avg_outside, a, b, pts };
+        },
+
         draw() {
-            if (this.days.length === 0) return;
+            if (!this.days.length) return;
             const dates = this.days.map(d => d.date);
 
-            // Chart 1: COP trends
-            Plotly.newPlot('cop-trends-chart', [
-                {type:'scatter', mode:'lines+markers', name:'COP totaal',
-                 x:dates, y:this.days.map(d=>d.cop_total),
-                 line:{color:'#dc2626', width:2}, yaxis:'y'},
-                {type:'scatter', mode:'lines+markers', name:'COP heating',
-                 x:dates, y:this.days.map(d=>d.cop_heating),
-                 line:{color:'#3b82f6', dash:'dash'}, yaxis:'y'},
-                {type:'scatter', mode:'lines+markers', name:'COP DHW',
-                 x:dates, y:this.days.map(d=>d.cop_dhw),
-                 line:{color:'#8b5cf6', dash:'dot'}, yaxis:'y'},
-                {type:'scatter', mode:'lines', name:'Buitentemp',
-                 x:dates, y:this.days.map(d=>d.avg_outside_temp_c),
-                 line:{color:'#9ca3af', width:1}, yaxis:'y2'},
+            // kWh chart
+            Plotly.newPlot('kwh-chart', [
+                {
+                    type: 'bar', name: 'Verbruik elektra',
+                    x: dates, y: this.days.map(d => d.consumption_total_kwh),
+                    marker: { color: '#3b82f6' },
+                },
+                {
+                    type: 'bar', name: 'Levering warmte',
+                    x: dates, y: this.days.map(d => d.supplied_total_kwh),
+                    marker: { color: '#10b981' },
+                },
             ], {
-                yaxis: {title:'COP', side:'left'},
-                yaxis2: {title:'°C', side:'right', overlaying:'y'},
-                margin:{t:10, l:50, r:50, b:40},
-                legend:{orientation:'h', y:-0.2},
-            }, {responsive:true});
+                barmode: 'group',
+                yaxis: { title: 'kWh' },
+                margin: { t: 10, l: 50, r: 20, b: 60 },
+                legend: { orientation: 'h', y: -0.3 },
+            }, { responsive: true });
 
-            // Chart 2: COP vs outside temp scatter
-            Plotly.newPlot('cop-vs-temp-chart', [{
-                type:'scatter', mode:'markers', name:'COP totaal',
-                x:this.days.map(d=>d.avg_outside_temp_c),
-                y:this.days.map(d=>d.cop_total),
-                marker:{color:'#dc2626', size:10},
-                text:dates,
-                hovertemplate:'%{text}<br>Buiten: %{x}°C<br>COP: %{y}<extra></extra>',
-            }], {
-                xaxis:{title:'Buitentemperatuur (°C)'},
-                yaxis:{title:'COP totaal'},
-                margin:{t:10, l:50, r:20, b:40},
-            }, {responsive:true});
-
-            // Chart 3: Heating vs DHW consumption stacked bar
-            Plotly.newPlot('heating-dhw-chart', [
-                {type:'bar', name:'Heating',
-                 x:dates, y:this.days.map(d=>d.consumption_heating_kwh),
-                 marker:{color:'#3b82f6'}},
-                {type:'bar', name:'DHW',
-                 x:dates, y:this.days.map(d=>d.consumption_dhw_kwh),
-                 marker:{color:'#8b5cf6'}},
+            // COP chart
+            Plotly.newPlot('cop-chart', [
+                {
+                    type: 'scatter', mode: 'lines+markers', name: 'COP totaal',
+                    x: dates, y: this.days.map(d => d.cop_total),
+                    line: { color: '#6366f1', width: 2 },
+                    marker: { size: 5 },
+                },
+                {
+                    type: 'scatter', mode: 'lines+markers', name: 'COP verwarming',
+                    x: dates, y: this.days.map(d => d.cop_heating),
+                    line: { color: '#f59e0b', width: 2, dash: 'dot' },
+                    marker: { size: 4 },
+                },
+                {
+                    type: 'scatter', mode: 'lines+markers', name: 'COP tapwater',
+                    x: dates, y: this.days.map(d => d.cop_dhw),
+                    line: { color: '#ec4899', width: 2, dash: 'dot' },
+                    marker: { size: 4 },
+                },
             ], {
-                barmode:'stack',
-                xaxis:{title:'Datum'},
-                yaxis:{title:'kWh verbruikt'},
-                margin:{t:10, l:50, r:20, b:40},
-                legend:{orientation:'h', y:-0.2},
-            }, {responsive:true});
+                yaxis: { title: 'COP', rangemode: 'tozero' },
+                margin: { t: 10, l: 50, r: 20, b: 60 },
+                legend: { orientation: 'h', y: -0.3 },
+            }, { responsive: true });
 
-            // Chart 4: Temperatures
-            Plotly.newPlot('temps-chart', [
-                {type:'scatter', mode:'lines+markers', name:'Flow',
-                 x:dates, y:this.days.map(d=>d.avg_flow_temp_c),
-                 line:{color:'#dc2626'}},
-                {type:'scatter', mode:'lines+markers', name:'Return',
-                 x:dates, y:this.days.map(d=>d.avg_return_temp_c),
-                 line:{color:'#3b82f6'}},
-                {type:'scatter', mode:'lines+markers', name:'Buiten',
-                 x:dates, y:this.days.map(d=>d.avg_outside_temp_c),
-                 line:{color:'#9ca3af', dash:'dash'}},
+            // Split chart
+            Plotly.newPlot('split-chart', [
+                {
+                    type: 'bar', name: 'Verwarming',
+                    x: dates, y: this.days.map(d => d.supplied_heating_kwh),
+                    marker: { color: '#f97316' },
+                },
+                {
+                    type: 'bar', name: 'Tapwater (DHW)',
+                    x: dates, y: this.days.map(d => d.supplied_dhw_kwh),
+                    marker: { color: '#8b5cf6' },
+                },
             ], {
-                yaxis:{title:'°C'},
-                margin:{t:10, l:50, r:20, b:40},
-                legend:{orientation:'h', y:-0.2},
-            }, {responsive:true});
+                barmode: 'stack',
+                yaxis: { title: 'kWh' },
+                margin: { t: 10, l: 50, r: 20, b: 60 },
+                legend: { orientation: 'h', y: -0.3 },
+            }, { responsive: true });
+
+            // Scatter: COP vs outside temp
+            if (this.hasTempData) {
+                const scatterTraces = [
+                    {
+                        type: 'scatter', mode: 'markers', name: 'Dag',
+                        x: this.days.map(d => d.avg_outside_temp_c),
+                        y: this.days.map(d => d.cop_total),
+                        marker: { color: '#6366f1', size: 7 },
+                        hovertemplate: '%{x:.1f}°C → COP %{y:.2f}<extra></extra>',
+                    }
+                ];
+
+                // Add regression trendline if health model is available
+                if (this.health && this.health.pts && this.health.pts.length >= 5) {
+                    const xs = this.health.pts.map(p => p.avg_outside_temp_c);
+                    const xMin = Math.min(...xs) - 1;
+                    const xMax = Math.max(...xs) + 1;
+                    const trendX = [xMin, xMax];
+                    const trendY = trendX.map(x => this.health.a + this.health.b * x);
+                    scatterTraces.push({
+                        type: 'scatter', mode: 'lines', name: 'Verwachte COP (30d model)',
+                        x: trendX, y: trendY,
+                        line: { color: '#94a3b8', width: 2, dash: 'dash' },
+                    });
+                }
+
+                Plotly.newPlot('scatter-chart', scatterTraces, {
+                    xaxis: { title: 'Gem. buitentemp (°C)' },
+                    yaxis: { title: 'COP', rangemode: 'tozero' },
+                    margin: { t: 10, l: 50, r: 20, b: 60 },
+                    legend: { orientation: 'h', y: -0.3 },
+                }, { responsive: true });
+
+                // Temp chart
+                Plotly.newPlot('temp-chart', [
+                    {
+                        type: 'scatter', mode: 'lines+markers', name: 'Aanvoer',
+                        x: dates, y: this.days.map(d => d.avg_flow_temp_c),
+                        line: { color: '#3b82f6', width: 2 },
+                    },
+                    {
+                        type: 'scatter', mode: 'lines+markers', name: 'Retour',
+                        x: dates, y: this.days.map(d => d.avg_return_temp_c),
+                        line: { color: '#10b981', width: 2 },
+                    },
+                    {
+                        type: 'scatter', mode: 'lines+markers', name: 'Buiten',
+                        x: dates, y: this.days.map(d => d.avg_outside_temp_c),
+                        line: { color: '#9ca3af', width: 2 },
+                    },
+                ], {
+                    yaxis: { title: '°C' },
+                    margin: { t: 10, l: 50, r: 20, b: 60 },
+                    legend: { orientation: 'h', y: -0.3 },
+                }, { responsive: true });
+            }
         },
     };
 }
