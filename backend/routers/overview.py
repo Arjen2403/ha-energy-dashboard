@@ -187,7 +187,7 @@ def get_overview():
         spot = state("sensor.nord_pool_nl_current_price")
         outside_c = state("sensor.boiler_outside_temperature")
 
-        # Appliance powers — heat pump: electrical W derived from cumulative kWh rate of change
+        # Appliance powers - heat pump: electrical W derived from cumulative kWh rate of change
         # (boiler_compressor_power_output reports thermal output, not electrical consumption)
         heatpump_w = heatpump_elec_w
         quooker_w = state("sensor.socket_quooker_power")
@@ -197,4 +197,42 @@ def get_overview():
         import_price = vandebron_import_price(spot) if spot is not None else None
 
         # Overig = totaal huis - bekende appliances
-      
+        if house_w is not None:
+            known = (heatpump_w or 0) + (quooker_w or 0) + (afwasmachine_w or 0)
+            overig_w = max(0, house_w - known)
+        else:
+            overig_w = None
+
+        last_ts_unix = max(
+            (v["ts"] for v in latest.values() if v.get("ts") is not None),
+            default=None,
+        )
+        last_updated = (
+            datetime.fromtimestamp(last_ts_unix, tz=timezone.utc)
+            if last_ts_unix is not None
+            else None
+        )
+
+        response = OverviewResponse(
+            kpi=Kpi(
+                grid_w=grid_w,
+                pv_w=pv_w,
+                house_w=house_w,
+                import_price_eur_per_kwh=import_price,
+                outside_temp_c=outside_c,
+                last_updated=last_updated,
+                heatpump_w=heatpump_w,
+                quooker_w=quooker_w,
+                afwasmachine_w=afwasmachine_w,
+                overig_w=overig_w,
+            ),
+            trend_6h=trend,
+        )
+        _overview_cache[cache_key] = response
+        _overview_stale[cache_key] = response
+        return response
+    except Exception:
+        stale = _overview_stale.get(cache_key)
+        if stale is not None:
+            return stale
+        raise
