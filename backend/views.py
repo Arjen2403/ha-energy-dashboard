@@ -440,3 +440,51 @@ def query_binary_state_history(conn, entity_id: str, from_ts: int, to_ts: int):
         {"entity_id": entity_id, "from_ts": from_ts, "to_ts": to_ts},
     ).fetchall()
     return [dict(r) for r in rows]
+
+# v_hourly_outside_temp
+#
+# Simpele hourly-mean van de buitentemperatuur-sensor, losstaand van de
+# grotere v_hourly_heatpump view. Gebruikt op de HP Status pagina om
+# verwarmingsperiodes te combineren met de buitentemperatuur-lijn.
+
+V_HOURLY_OUTSIDE_TEMP = """
+SELECT s.start_ts AS hour_ts, s.mean AS outside_temp_c
+FROM statistics s
+JOIN statistics_meta sm ON sm.id = s.metadata_id
+WHERE sm.statistic_id = 'sensor.boiler_outside_temperature'
+  AND s.start_ts >= :from_ts
+  AND s.start_ts <= :to_ts
+ORDER BY s.start_ts
+"""
+
+
+def query_hourly_outside_temp(conn, from_ts: int, to_ts: int):
+    """Voer v_hourly_outside_temp uit en retourneer een lijst dicts."""
+    rows = conn.execute(
+        V_HOURLY_OUTSIDE_TEMP, {"from_ts": from_ts, "to_ts": to_ts}
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+# v_hourly_price
+#
+# Hourly-mean Nord Pool spot-prijs, losstaand van v_hourly_costs. Gebruikt
+# voor de DHW-patroon-analyse (welke uren-van-de-dag zijn gemiddeld het
+# goedkoopst in de gekozen periode).
+
+V_HOURLY_PRICE = """
+SELECT s.start_ts AS hour_ts, s.mean AS spot_price
+FROM statistics s
+JOIN statistics_meta sm ON sm.id = s.metadata_id
+WHERE sm.statistic_id = 'sensor.nord_pool_nl_current_price'
+  AND s.start_ts >= :from_ts
+  AND s.start_ts <= :to_ts
+ORDER BY s.start_ts
+"""
+
+
+def query_hourly_price(conn, from_ts: int, to_ts: int):
+    """Voer v_hourly_price uit en retourneer een lijst dicts."""
+    rows = conn.execute(
+        V_HOURLY_PRICE, {"from_ts": from_ts, "to_ts": to_ts}
+    ).fetchall()
+    return [dict(r) for r in rows]

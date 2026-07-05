@@ -66,7 +66,7 @@
     <!-- Range selector -->
     <div class="flex flex-wrap gap-2 mb-6">
         <template x-for="r in ranges" :key="r.value">
-            <button @click="range = r.value; loadRange()"
+            <button @click="range = r.value; loadRange(); loadPattern()"
                     :class="range === r.value
                         ? 'bg-blue-600 text-white px-3 py-1 rounded text-sm font-medium'
                         : 'bg-white border border-gray-300 text-gray-700 px-3 py-1 rounded text-sm hover:bg-gray-50'"
@@ -108,6 +108,35 @@
         Geen aan/uit-data voor deze periode.
     </div>
 
+    <!-- Verwarming vs buitentemperatuur -->
+    <div class="bg-white p-4 rounded shadow mb-6" x-show="!loading && outsideTemp.length">
+        <h2 class="text-sm font-semibold text-gray-700 mb-1">Buitentemperatuur + verwarmingsperiodes</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Grijze lijn = buitentemperatuur per uur. Oranje band = verwarming actief. Laat zien bij welke temperatuur de warmtepomp gaat verwarmen.</p>
+        <div id="temp-heating-chart" class="h-64"></div>
+    </div>
+
+    <!-- DHW-patroon -->
+    <div class="bg-white p-4 rounded shadow mb-6" x-show="!loading && pattern">
+        <h2 class="text-sm font-semibold text-gray-700 mb-1">DHW-patroon: wanneer laadt de boiler tapwater op</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Elke rij is een dag, elke kolom een uur-van-de-dag. Donkerder paars = meer minuten DHW-activiteit in dat uur. Gebruik dit om te zien of er een vast patroon zit (bv. altijd 's ochtends) of dat het puur vraag-gestuurd is.</p>
+        <div x-show="pattern && pattern.days.length < 3"
+             class="bg-yellow-50 border border-yellow-200 text-yellow-800 p-3 rounded mb-3 text-sm">
+            <span>Kies 7 dagen of langer voor een betrouwbaar patroon — met maar </span>
+            <span x-text="pattern ? pattern.days.length : 0"></span>
+            <span> dag(en) is dit nog ruis.</span>
+        </div>
+        <div id="dhw-heatmap-chart" class="h-64 mb-6"></div>
+
+        <h3 class="text-sm font-semibold text-gray-700 mb-1">Gemiddeld per uur van de dag</h3>
+        <p class="text-xs text-gray-500 italic mb-3">Paarse balken = gemiddelde DHW-minuten per uur (linker as). Grijze stippellijn = gemiddelde stroomprijs per uur in dezelfde periode (rechter as).</p>
+        <div id="dhw-hour-profile-chart" class="h-64"></div>
+
+        <div x-show="pattern && pattern.recommendation" class="bg-blue-50 border border-blue-200 text-blue-900 p-4 rounded mt-4 text-sm">
+            <span class="font-semibold">Observatie:</span>
+            <span x-text="pattern ? pattern.recommendation.advice : ''"></span>
+        </div>
+    </div>
+
     <!-- Daily detail table -->
     <div class="bg-white rounded shadow overflow-x-auto mb-6" x-show="!loading && daily.length">
         <table class="w-full text-sm">
@@ -141,7 +170,7 @@
 <script>
 function hpStatusApp() {
     return {
-        range: '7d',
+        range: '30d',
         ranges: [
             { value: 'today', label: 'Vandaag' },
             { value: '7d',    label: '7 dagen' },
@@ -151,6 +180,8 @@ function hpStatusApp() {
         live: null,
         daily: [],
         segments: { heating: [], dhw: [] },
+        outsideTemp: [],
+        pattern: null,
         totals: { heatingMin: 0, dhwMin: 0, heatingCycles: 0, dhwCycles: 0 },
         loading: false,
         error: null,
@@ -187,7 +218,7 @@ function hpStatusApp() {
         },
 
         async load() {
-            await Promise.all([this.loadLive(), this.loadRange()]);
+            await Promise.all([this.loadLive(), this.loadRange(), this.loadPattern()]);
             if (!this.liveTimer) {
                 this.liveTimer = setInterval(() => this.loadLive(), 30000);
             }
@@ -213,12 +244,24 @@ function hpStatusApp() {
                 const data = await res.json();
                 this.daily = data.daily || [];
                 this.segments = data.segments || { heating: [], dhw: [] };
+                this.outsideTemp = data.outside_temp || [];
                 this.computeTotals();
                 this.$nextTick(() => this.draw());
             } catch (e) {
                 this.error = `Fout bij laden: ${e.message}`;
             } finally {
                 this.loading = false;
+            }
+        },
+
+        async loadPattern() {
+            try {
+                const res = await fetch(`/api/heatpump/status/dhw_pattern?range=${this.range}`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                this.pattern = await res.json();
+                this.$nextTick(() => this.drawPattern());
+            } catch (e) {
+                // patroon-analyse is aanvullend; hoofdpagina blijft werken zonder
             }
         },
 
@@ -258,6 +301,88 @@ function hpStatusApp() {
                 yaxis: { type: 'category', categoryorder: 'array', categoryarray: ['Tapwater (DHW)', 'Verwarming'] },
                 margin: { t: 10, l: 110, r: 20, b: 40 },
                 bargap: 0.6,
+            }, { responsive: true });
+
+            this.drawTempHeating();
+        },
+
+        drawTempHeating() {
+            if (!this.outsideTemp.length) return;
+
+            const tempTrace = {
+                type: 'scatter', mode: 'lines', name: 'Buitentemperatuur',
+                x: this.outsideTemp.map(t => t.ts),
+                y: this.outsideTemp.map(t => t.value),
+                line: { color: '#9ca3af', width: 1.5 },
+                hovertemplate: '%{x|%d-%m %H:%M}: %{y:.1f}°C<extra></extra>',
+            };
+
+            // Oranje verticale banden voor elke verwarmings-periode, over de
+            // volledige hoogte van de plot (yref 'paper').
+            const shapes = this.segments.heating.map(s => ({
+                type: 'rect',
+                xref: 'x', yref: 'paper',
+                x0: s.start, x1: s.end,
+                y0: 0, y1: 1,
+                fillcolor: '#f97316',
+                opacity: 0.18,
+                line: { width: 0 },
+            }));
+
+            Plotly.newPlot('temp-heating-chart', [tempTrace], {
+                xaxis: { type: 'date', title: '' },
+                yaxis: { title: '°C' },
+                shapes: shapes,
+                margin: { t: 10, l: 50, r: 20, b: 40 },
+                showlegend: false,
+            }, { responsive: true });
+        },
+
+        drawPattern() {
+            if (!this.pattern) return;
+            const p = this.pattern;
+            const hourLabels = p.hours.map(h => `${String(h).padStart(2, '0')}:00`);
+
+            // Heatmap: dag (y) x uur-van-de-dag (x), waarde = aan-minuten.
+            if (p.days.length) {
+                Plotly.newPlot('dhw-heatmap-chart', [{
+                    type: 'heatmap',
+                    x: hourLabels,
+                    y: p.days,
+                    z: p.heatmap,
+                    colorscale: [[0, '#f5f3ff'], [1, '#6d28d9']],
+                    hovertemplate: '%{y} %{x}: %{z} min<extra></extra>',
+                    colorbar: { title: 'min' },
+                }], {
+                    xaxis: { title: 'Uur van de dag' },
+                    yaxis: { title: '', autorange: 'reversed' },
+                    margin: { t: 10, l: 90, r: 20, b: 40 },
+                }, { responsive: true });
+            }
+
+            // Gemiddeld DHW-profiel per uur (balken) + gemiddelde prijs per uur (lijn, secundaire as).
+            const barTrace = {
+                type: 'bar', name: 'Gem. DHW-minuten',
+                x: hourLabels,
+                y: p.hour_profile.map(hp => hp.avg_on_min),
+                marker: { color: '#8b5cf6' },
+                yaxis: 'y',
+            };
+            const priceTrace = {
+                type: 'scatter', mode: 'lines+markers', name: 'Gem. stroomprijs',
+                x: hourLabels,
+                y: p.price_by_hour.map(ph => ph.avg_price_eur_per_kwh),
+                line: { color: '#6b7280', width: 1.5, dash: 'dot' },
+                marker: { size: 4 },
+                yaxis: 'y2',
+            };
+
+            Plotly.newPlot('dhw-hour-profile-chart', [barTrace, priceTrace], {
+                xaxis: { title: 'Uur van de dag' },
+                yaxis: { title: 'Gem. DHW-minuten', rangemode: 'tozero' },
+                yaxis2: { title: '€/kWh', overlaying: 'y', side: 'right', rangemode: 'tozero' },
+                margin: { t: 10, l: 60, r: 60, b: 40 },
+                legend: { orientation: 'h', y: -0.25 },
             }, { responsive: true });
         },
     };

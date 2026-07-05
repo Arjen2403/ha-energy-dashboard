@@ -22,7 +22,7 @@ from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException, Query
 
 from ..db import ha_db
-from ..views import query_binary_state_history
+from ..views import query_binary_state_history, query_hourly_outside_temp, query_hourly_price
 
 router = APIRouter()
 
@@ -119,6 +119,25 @@ def _split_by_nl_day(start_ts: int, end_ts: int) -> list[tuple[str, float]]:
     return result
 
 
+def _split_by_nl_hour(start_ts: int, end_ts: int) -> list[tuple[str, int, float]]:
+    """Splits een [start_ts, end_ts) interval op in minuten per (NL-dag, NL-uur)-cel.
+
+    Zelfde principe als _split_by_nl_day maar één niveau fijner — nodig voor
+    de DHW-patroon-heatmap (dag x uur-van-de-dag)."""
+    result = []
+    cur = datetime.fromtimestamp(start_ts, tz=timezone.utc).astimezone(NL_TZ)
+    end_dt = datetime.fromtimestamp(end_ts, tz=timezone.utc).astimezone(NL_TZ)
+    while cur < end_dt:
+        day_str = cur.strftime("%Y-%m-%d")
+        hour = cur.hour
+        next_boundary = (cur.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
+        chunk_end = min(next_boundary, end_dt)
+        minutes = (chunk_end - cur).total_seconds() / 60.0
+        result.append((day_str, hour, minutes))
+        cur = chunk_end
+    return result
+
+
 def _iso(ts: int) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
@@ -194,6 +213,7 @@ def get_heatpump_status(
         with ha_db() as conn:
             heating_rows = query_binary_state_history(conn, HEATING_ENTITY, from_ts, to_ts)
             dhw_rows = query_binary_state_history(conn, DHW_ENTITY, from_ts, to_ts)
+            temp_rows = query_hourly_outside_temp(conn, from_ts, to_ts)
 
         heating_segments = _build_on_segments(heating_rows, from_ts, to_ts)
         dhw_segments = _build_on_segments(dhw_rows, from_ts, to_ts)
@@ -226,6 +246,14 @@ def get_heatpump_status(
             for d, v in sorted(daily.items())
         ]
 
+        outside_temp = [
+            {
+                "ts": _iso(r["hour_ts"]),
+                "value": round(r["outside_temp_c"], 1) if r["outside_temp_c"] is not None else None,
+            }
+            for r in temp_rows
+        ]
+
         response = {
             "range": range,
             "from_ts": _iso(from_ts),
@@ -235,6 +263,154 @@ def get_heatpump_status(
                 "dhw": [{"start": _iso(s["start_ts"]), "end": _iso(s["end_ts"])} for s in dhw_segments],
             },
             "daily": daily_list,
+            "outside_temp": outside_temp,
+        }
+        _status_cache[cache_key] = response
+        _status_stale[cache_key] = response
+        return response
+    except Exception:
+        stale = _status_stale.get(cache_key)
+        if stale is not None:
+            return stale
+        raise
+
+
+@router.get("/heatpump/status/dhw_pattern")
+def get_dhw_pattern(
+    range_: Literal["today", "7d", "30d", "ytd", "custom"] = Query("30d", alias="range"),
+    from_: Optional[str] = Query(None, alias="from"),
+    to: Optional[str] = Query(None),
+):
+    """DHW aan/uit-patroon per uur-van-de-dag (dag x uur heatmap + gemiddeld
+    profiel), plus de gemiddelde spot-prijs per uur-van-de-dag over dezelfde
+    periode — zodat we kunnen zien of het huidige laadpatroon overlapt met de
+    goedkoopste stroomuren, of dat er ruimte is om te verschuiven.
+
+    Blijft puur informatief: geen automation of write-actie naar HA.
+
+    Let op: de parameter heet hier `range_` (i.p.v. `range` zoals elders in
+    de app) omdat deze functie `range(24)` gebruikt voor de uur-van-de-dag
+    matrix — een parameter die `range` heet zou de builtin overschaduwen en
+    `range(24)` laten crashen met "'str' object is not callable". De query-
+    string blijft gewoon `?range=` via de alias.
+    """
+    cache_key = ("dhw_pattern", range_, from_, to)
+    cached = _status_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        from_ts, to_ts = _resolve_range(range_, from_, to)
+
+        with ha_db() as conn:
+            dhw_rows = query_binary_state_history(conn, DHW_ENTITY, from_ts, to_ts)
+            price_rows = query_hourly_price(conn, from_ts, to_ts)
+
+        segments = _build_on_segments(dhw_rows, from_ts, to_ts)
+
+        # Dag x uur matrix van aan-minuten.
+        matrix: dict[str, dict[int, float]] = defaultdict(lambda: defaultdict(float))
+        for seg in segments:
+            for day_str, hour, minutes in _split_by_nl_hour(seg["start_ts"], seg["end_ts"]):
+                matrix[day_str][hour] += minutes
+
+        days_sorted = sorted(matrix.keys())
+        heatmap = [[round(matrix[d].get(h, 0.0), 1) for h in range(24)] for d in days_sorted]
+
+        # Alle NL-kalenderdagen in de range tellen mee voor het gemiddelde,
+        # ook dagen zonder enig DHW-segment — anders vertekent het gemiddelde.
+        all_days = set()
+        cur = datetime.fromtimestamp(from_ts, tz=timezone.utc).astimezone(NL_TZ)
+        end_dt = datetime.fromtimestamp(to_ts, tz=timezone.utc).astimezone(NL_TZ)
+        while cur < end_dt:
+            all_days.add(cur.strftime("%Y-%m-%d"))
+            cur += timedelta(days=1)
+        n_days = max(len(all_days), 1)
+
+        hour_totals = [0.0] * 24
+        hour_days_active = [0] * 24
+        for d in all_days:
+            for h in range(24):
+                mins = matrix.get(d, {}).get(h, 0.0)
+                hour_totals[h] += mins
+                if mins > 0:
+                    hour_days_active[h] += 1
+
+        hour_profile = [
+            {
+                "hour": h,
+                "avg_on_min": round(hour_totals[h] / n_days, 1),
+                "pct_days_active": round(100 * hour_days_active[h] / n_days, 0),
+            }
+            for h in range(24)
+        ]
+
+        # Gemiddelde spot-prijs per uur-van-de-dag over dezelfde periode.
+        price_sum = [0.0] * 24
+        price_n = [0] * 24
+        for r in price_rows:
+            if r["spot_price"] is None:
+                continue
+            hour_dt = datetime.fromtimestamp(r["hour_ts"], tz=timezone.utc).astimezone(NL_TZ)
+            h = hour_dt.hour
+            price_sum[h] += r["spot_price"]
+            price_n[h] += 1
+        price_by_hour = [
+            {
+                "hour": h,
+                "avg_price_eur_per_kwh": round(price_sum[h] / price_n[h], 4) if price_n[h] else None,
+            }
+            for h in range(24)
+        ]
+
+        # Simpele aanbeveling: top-3 uren waarin nu al het meest geladen wordt
+        # vs. top-3 gemiddeld goedkoopste uren in dezelfde periode.
+        pattern_hours = sorted(
+            [hp for hp in hour_profile if hp["avg_on_min"] > 0],
+            key=lambda hp: hp["avg_on_min"], reverse=True,
+        )[:3]
+        priced_hours = [p for p in price_by_hour if p["avg_price_eur_per_kwh"] is not None]
+        cheapest_hours = sorted(priced_hours, key=lambda p: p["avg_price_eur_per_kwh"])[:3]
+
+        pattern_hour_set = {hp["hour"] for hp in pattern_hours}
+        cheapest_hour_set = {p["hour"] for p in cheapest_hours}
+        overlap = pattern_hour_set & cheapest_hour_set
+
+        def fmt_hours(hrs) -> str:
+            return ", ".join(f"{h:02d}:00" for h in sorted(hrs))
+
+        if not pattern_hours:
+            advice = "Nog niet genoeg DHW-activiteit in deze periode om een patroon te herkennen."
+        elif not priced_hours:
+            advice = "Geen spot-prijsdata beschikbaar voor deze periode om te vergelijken."
+        elif overlap:
+            advice = (
+                f"DHW laadt nu vooral rond {fmt_hours(pattern_hour_set)}. Dat overlapt al met de "
+                f"goedkoopste uren in deze periode ({fmt_hours(cheapest_hour_set)}) — weinig extra "
+                f"te winnen door te verschuiven."
+            )
+        else:
+            advice = (
+                f"DHW laadt nu vooral rond {fmt_hours(pattern_hour_set)}, terwijl de goedkoopste "
+                f"stroomuren in deze periode gemiddeld rond {fmt_hours(cheapest_hour_set)} lagen. "
+                f"Verschuiven zou potentieel goedkoper zijn — dit vereist wel dat de warmtepomp een "
+                f"'DHW boost/forceren'-optie heeft die vanuit HA aan te sturen is."
+            )
+
+        response = {
+            "range": range_,
+            "from_ts": _iso(from_ts),
+            "to_ts": _iso(to_ts),
+            "days": days_sorted,
+            "hours": list(range(24)),
+            "heatmap": heatmap,
+            "hour_profile": hour_profile,
+            "price_by_hour": price_by_hour,
+            "recommendation": {
+                "pattern_hours": sorted(pattern_hour_set),
+                "cheapest_hours": sorted(cheapest_hour_set),
+                "advice": advice,
+            },
         }
         _status_cache[cache_key] = response
         _status_stale[cache_key] = response
