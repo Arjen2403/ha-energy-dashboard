@@ -390,3 +390,53 @@ def query_hourly_solar(conn, from_ts: int, to_ts: int):
         V_HOURLY_SOLAR, {"from_ts": from_ts, "to_ts": to_ts}
     ).fetchall()
     return [dict(r) for r in rows]
+
+# v_binary_state_history
+#
+# Ruwe state-change historie van één on/off (of enum-achtige) entity binnen
+# een tijdvak, plus de laatst bekende state van vóór :from_ts. Dat extra
+# "lookback"-record is nodig zodat het eerste segment binnen de range een
+# geldig startpunt heeft — zelfde principe als de :from_ts - 3600 lookback
+# in v_hourly_heatpump, maar hier op state-change niveau i.p.v. uur-niveau
+# omdat binaire sensoren (bv. binary_sensor.boiler_heating_active,
+# binary_sensor.boiler_dhw_charging) niet in Long-Term Statistics landen —
+# alleen numerieke sensoren met state_class krijgen daar een rij. Voor
+# aan/uit-tijdlijnen moeten we dus rechtstreeks uit `states` lezen en zelf
+# aaneengesloten segmenten opbouwen (zie routers/hp_status.py).
+
+V_BINARY_STATE_HISTORY = """
+SELECT state, ts FROM (
+    SELECT s.state, s.last_updated_ts AS ts
+    FROM states s
+    JOIN states_meta sm ON sm.metadata_id = s.metadata_id
+    WHERE sm.entity_id = :entity_id
+      AND s.last_updated_ts < :from_ts
+    ORDER BY s.last_updated_ts DESC
+    LIMIT 1
+)
+UNION ALL
+SELECT state, ts FROM (
+    SELECT s.state, s.last_updated_ts AS ts
+    FROM states s
+    JOIN states_meta sm ON sm.metadata_id = s.metadata_id
+    WHERE sm.entity_id = :entity_id
+      AND s.last_updated_ts >= :from_ts
+      AND s.last_updated_ts <= :to_ts
+    ORDER BY s.last_updated_ts
+)
+ORDER BY ts
+"""
+
+
+def query_binary_state_history(conn, entity_id: str, from_ts: int, to_ts: int):
+    """Voer v_binary_state_history uit en retourneer een lijst dicts.
+
+    Retourneert alle state-change rijen in [from_ts, to_ts], plus (als eerste
+    rij, indien aanwezig) de laatst bekende state van vóór from_ts. Rijen
+    zijn {"state": str, "ts": int (unix epoch seconds, UTC)}.
+    """
+    rows = conn.execute(
+        V_BINARY_STATE_HISTORY,
+        {"entity_id": entity_id, "from_ts": from_ts, "to_ts": to_ts},
+    ).fetchall()
+    return [dict(r) for r in rows]

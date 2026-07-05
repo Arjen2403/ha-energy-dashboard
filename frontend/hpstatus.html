@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Energy">
+    <meta name="theme-color" content="#3b82f6">
+    <title>HP Status — HA Energy Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.13.0/dist/cdn.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-900">
+
+<nav class="bg-white shadow px-6 py-3 flex gap-6 mb-6 flex-wrap">
+    <span class="font-bold text-blue-600">HA Energy Dashboard</span>
+    <a href="/now.html" class="text-gray-500 hover:text-blue-600">Now</a>
+    <a href="/flows.html" class="text-gray-500 hover:text-blue-600">Energy Flows</a>
+    <a href="/costs.html" class="text-gray-500 hover:text-blue-600">Costs</a>
+    <a href="/heatpump.html" class="text-gray-500 hover:text-blue-600">Heat Pump</a>
+    <a href="/hpstatus.html" class="text-blue-600 font-semibold">HP Status</a>
+    <a href="/solar.html" class="text-gray-500 hover:text-blue-600">Solar</a>
+    <a href="/strategy.html" class="text-gray-500 hover:text-blue-600">Strategie</a>
+    <a href="/grid.html" class="text-gray-500 hover:text-blue-600">Grid / Fases</a>
+</nav>
+
+<div class="max-w-6xl mx-auto px-6" x-data="hpStatusApp()" x-init="load()">
+
+    <h1 class="text-2xl font-bold mb-1">Warmtepomp Status</h1>
+    <p class="text-sm text-gray-500 italic mb-4">Wanneer is de warmtepomp aan het verwarmen of tapwater (DHW) aan het opladen. Ververst elke 30 seconden.</p>
+
+    <div x-show="error" class="bg-red-50 border border-red-200 text-red-700 p-4 rounded mb-4" x-text="error"></div>
+
+    <!-- Live status cards -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6" x-show="live">
+        <div class="bg-white p-4 rounded shadow flex items-center justify-between">
+            <div>
+                <div class="text-sm text-gray-500">Verwarming</div>
+                <div class="text-xl font-bold" :class="live && live.heating_active ? 'text-orange-600' : 'text-gray-400'"
+                     x-text="live ? (live.heating_active ? 'Aan' : 'Uit') : '–'"></div>
+                <div class="text-xs text-gray-400 mt-1" x-text="live && live.heating_since ? 'sinds ' + relTime(live.heating_since) : ''"></div>
+            </div>
+            <div class="w-3 h-3 rounded-full" :class="live && live.heating_active ? 'bg-orange-500' : 'bg-gray-300'"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow flex items-center justify-between">
+            <div>
+                <div class="text-sm text-gray-500">Tapwater (DHW)</div>
+                <div class="text-xl font-bold" :class="live && live.dhw_charging ? 'text-purple-600' : 'text-gray-400'"
+                     x-text="live ? (live.dhw_charging ? 'Aan' : 'Uit') : '–'"></div>
+                <div class="text-xs text-gray-400 mt-1" x-text="live && live.dhw_since ? 'sinds ' + relTime(live.dhw_since) : ''"></div>
+            </div>
+            <div class="w-3 h-3 rounded-full" :class="live && live.dhw_charging ? 'bg-purple-500' : 'bg-gray-300'"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Compressor bezig met</div>
+            <div class="text-xl font-bold" :class="compressorColor"
+                 x-text="live && live.compressor_activity ? compressorLabel(live.compressor_activity) : '–'"></div>
+        </div>
+    </div>
+
+    <!-- Range selector -->
+    <div class="flex flex-wrap gap-2 mb-6">
+        <template x-for="r in ranges" :key="r.value">
+            <button @click="range = r.value; loadRange()"
+                    :class="range === r.value
+                        ? 'bg-blue-600 text-white px-3 py-1 rounded text-sm font-medium'
+                        : 'bg-white border border-gray-300 text-gray-700 px-3 py-1 rounded text-sm hover:bg-gray-50'"
+                    x-text="r.label"></button>
+        </template>
+    </div>
+
+    <div x-show="loading" class="text-gray-500 text-sm mb-4">Laden…</div>
+
+    <!-- KPI cards over de gekozen periode -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6" x-show="!loading && daily.length">
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Verwarming actief</div>
+            <div class="text-2xl font-bold text-orange-600" x-text="formatHours(totals.heatingMin)"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Tapwater actief</div>
+            <div class="text-2xl font-bold text-purple-600" x-text="formatHours(totals.dhwMin)"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Verwarmingscycli</div>
+            <div class="text-2xl font-bold" x-text="totals.heatingCycles"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">DHW-cycli</div>
+            <div class="text-2xl font-bold" x-text="totals.dhwCycles"></div>
+        </div>
+    </div>
+
+    <!-- Timeline -->
+    <div class="bg-white p-4 rounded shadow mb-6" x-show="!loading && (segments.heating.length || segments.dhw.length)">
+        <h2 class="text-sm font-semibold text-gray-700 mb-1">Tijdlijn aan/uit</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Oranje balken = ruimteverwarming actief. Paars = tapwater (DHW) aan het laden.</p>
+        <div id="timeline-chart" class="h-48"></div>
+    </div>
+
+    <div x-show="!loading && !segments.heating.length && !segments.dhw.length"
+         class="bg-yellow-50 border border-yellow-200 text-yellow-800 p-4 rounded mb-6">
+        Geen aan/uit-data voor deze periode.
+    </div>
+
+    <!-- Daily detail table -->
+    <div class="bg-white rounded shadow overflow-x-auto mb-6" x-show="!loading && daily.length">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-50 text-gray-700">
+                <tr>
+                    <th class="text-left px-4 py-2">Datum</th>
+                    <th class="text-right px-4 py-2">Verwarming</th>
+                    <th class="text-right px-4 py-2">Verw. cycli</th>
+                    <th class="text-right px-4 py-2">Tapwater</th>
+                    <th class="text-right px-4 py-2">DHW cycli</th>
+                </tr>
+            </thead>
+            <tbody>
+                <template x-for="d in daily" :key="d.date">
+                    <tr class="border-t hover:bg-gray-50">
+                        <td class="px-4 py-2" x-text="d.date"></td>
+                        <td class="px-4 py-2 text-right text-orange-600" x-text="formatHours(d.heating_on_min)"></td>
+                        <td class="px-4 py-2 text-right" x-text="d.heating_cycles"></td>
+                        <td class="px-4 py-2 text-right text-purple-600" x-text="formatHours(d.dhw_on_min)"></td>
+                        <td class="px-4 py-2 text-right" x-text="d.dhw_cycles"></td>
+                    </tr>
+                </template>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="text-xs text-gray-400 text-right mt-2"
+         x-text="lastUpdated ? 'Bijgewerkt: ' + lastUpdated : ''"></div>
+</div>
+
+<script>
+function hpStatusApp() {
+    return {
+        range: '7d',
+        ranges: [
+            { value: 'today', label: 'Vandaag' },
+            { value: '7d',    label: '7 dagen' },
+            { value: '30d',   label: '30 dagen' },
+            { value: 'ytd',   label: 'Dit jaar' },
+        ],
+        live: null,
+        daily: [],
+        segments: { heating: [], dhw: [] },
+        totals: { heatingMin: 0, dhwMin: 0, heatingCycles: 0, dhwCycles: 0 },
+        loading: false,
+        error: null,
+        lastUpdated: null,
+        liveTimer: null,
+
+        get compressorColor() {
+            if (!this.live || !this.live.compressor_activity) return 'text-gray-400';
+            const a = this.live.compressor_activity;
+            if (a === 'heating') return 'text-orange-600';
+            if (a === 'hot water') return 'text-purple-600';
+            return 'text-gray-400';
+        },
+
+        compressorLabel(activity) {
+            const map = { heating: 'Verwarmen', 'hot water': 'Tapwater', off: 'Uit' };
+            return map[activity] || activity;
+        },
+
+        relTime(iso) {
+            const diffMs = Date.now() - new Date(iso).getTime();
+            const mins = Math.round(diffMs / 60000);
+            if (mins < 1) return 'net';
+            if (mins < 60) return `${mins} min`;
+            const hrs = Math.floor(mins / 60);
+            const rem = mins % 60;
+            return `${hrs}u ${rem}m`;
+        },
+
+        formatHours(minutes) {
+            if (minutes === null || minutes === undefined) return '–';
+            const h = minutes / 60;
+            return h.toFixed(1) + ' u';
+        },
+
+        async load() {
+            await Promise.all([this.loadLive(), this.loadRange()]);
+            if (!this.liveTimer) {
+                this.liveTimer = setInterval(() => this.loadLive(), 30000);
+            }
+        },
+
+        async loadLive() {
+            try {
+                const res = await fetch('/api/heatpump/status/live');
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                this.live = await res.json();
+                this.lastUpdated = new Date().toLocaleTimeString('nl-NL');
+            } catch (e) {
+                // live-status is aanvullend; laat bestaande data staan bij een tijdelijke fout
+            }
+        },
+
+        async loadRange() {
+            this.loading = true;
+            this.error = null;
+            try {
+                const res = await fetch(`/api/heatpump/status?range=${this.range}`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                this.daily = data.daily || [];
+                this.segments = data.segments || { heating: [], dhw: [] };
+                this.computeTotals();
+                this.$nextTick(() => this.draw());
+            } catch (e) {
+                this.error = `Fout bij laden: ${e.message}`;
+            } finally {
+                this.loading = false;
+            }
+        },
+
+        computeTotals() {
+            const t = { heatingMin: 0, dhwMin: 0, heatingCycles: 0, dhwCycles: 0 };
+            for (const d of this.daily) {
+                t.heatingMin += d.heating_on_min;
+                t.dhwMin += d.dhw_on_min;
+                t.heatingCycles += d.heating_cycles;
+                t.dhwCycles += d.dhw_cycles;
+            }
+            this.totals = t;
+        },
+
+        draw() {
+            // Gantt-achtige tijdlijn via bar-traces: base = start (datum), x = duur in ms.
+            const toTrace = (segs, label, color) => ({
+                type: 'bar',
+                orientation: 'h',
+                name: label,
+                y: segs.map(() => label),
+                base: segs.map(s => s.start),
+                x: segs.map(s => new Date(s.end).getTime() - new Date(s.start).getTime()),
+                marker: { color },
+                hovertemplate: '%{base|%d-%m %H:%M} → einde<extra></extra>',
+                showlegend: false,
+            });
+
+            const traces = [
+                toTrace(this.segments.heating, 'Verwarming', '#f97316'),
+                toTrace(this.segments.dhw, 'Tapwater (DHW)', '#8b5cf6'),
+            ];
+
+            Plotly.newPlot('timeline-chart', traces, {
+                barmode: 'overlay',
+                xaxis: { type: 'date', title: '' },
+                yaxis: { type: 'category', categoryorder: 'array', categoryarray: ['Tapwater (DHW)', 'Verwarming'] },
+                margin: { t: 10, l: 110, r: 20, b: 40 },
+                bargap: 0.6,
+            }, { responsive: true });
+        },
+    };
+}
+</script>
+
+</body>
+</html>
