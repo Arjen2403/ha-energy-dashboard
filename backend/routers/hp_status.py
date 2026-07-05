@@ -314,11 +314,11 @@ def get_dhw_pattern(
             for day_str, hour, minutes in _split_by_nl_hour(seg["start_ts"], seg["end_ts"]):
                 matrix[day_str][hour] += minutes
 
-        days_sorted = sorted(matrix.keys())
-        heatmap = [[round(matrix[d].get(h, 0.0), 1) for h in range(24)] for d in days_sorted]
-
-        # Alle NL-kalenderdagen in de range tellen mee voor het gemiddelde,
-        # ook dagen zonder enig DHW-segment — anders vertekent het gemiddelde.
+        # Alle NL-kalenderdagen in de range — inclusief dagen zonder enig
+        # DHW-segment. Die moeten als lege rij in de heatmap verschijnen,
+        # anders klopt de dag-op-dag afstand niet meer (en gaat Plotly de
+        # y-as als een echte datum-as behandelen met ongelijke tussenruimtes
+        # i.p.v. een simpele categorie-as met één rij per dag).
         all_days = set()
         cur = datetime.fromtimestamp(from_ts, tz=timezone.utc).astimezone(NL_TZ)
         end_dt = datetime.fromtimestamp(to_ts, tz=timezone.utc).astimezone(NL_TZ)
@@ -326,6 +326,9 @@ def get_dhw_pattern(
             all_days.add(cur.strftime("%Y-%m-%d"))
             cur += timedelta(days=1)
         n_days = max(len(all_days), 1)
+
+        days_sorted = sorted(all_days)
+        heatmap = [[round(matrix.get(d, {}).get(h, 0.0), 1) for h in range(24)] for d in days_sorted]
 
         hour_totals = [0.0] * 24
         hour_days_active = [0] * 24

@@ -353,10 +353,17 @@ function hpStatusApp() {
                     colorscale: [[0, '#f5f3ff'], [1, '#6d28d9']],
                     hovertemplate: '%{y} %{x}: %{z} min<extra></extra>',
                     colorbar: { title: 'min' },
+                    xgap: 2,
+                    ygap: 2,
                 }], {
-                    xaxis: { title: 'Uur van de dag' },
-                    yaxis: { title: '', autorange: 'reversed' },
-                    margin: { t: 10, l: 90, r: 20, b: 40 },
+                    // type: 'category' expliciet zetten op beide assen — anders
+                    // ziet Plotly "11:00" en "2026-07-01" aan voor echte datums/
+                    // tijden en schakelt zelf over naar een datum-as met eigen
+                    // (ongelijke) tick-afstand, wat de labels laat overlappen
+                    // en rijen laat "verspringen".
+                    xaxis: { title: 'Uur van de dag', type: 'category', tickangle: -45 },
+                    yaxis: { title: '', type: 'category', autorange: 'reversed' },
+                    margin: { t: 10, l: 90, r: 20, b: 60 },
                 }, { responsive: true });
             }
 
@@ -378,11 +385,11 @@ function hpStatusApp() {
             };
 
             Plotly.newPlot('dhw-hour-profile-chart', [barTrace, priceTrace], {
-                xaxis: { title: 'Uur van de dag' },
+                xaxis: { title: 'Uur van de dag', type: 'category', tickangle: -45 },
                 yaxis: { title: 'Gem. DHW-minuten', rangemode: 'tozero' },
                 yaxis2: { title: '€/kWh', overlaying: 'y', side: 'right', rangemode: 'tozero' },
-                margin: { t: 10, l: 60, r: 60, b: 40 },
-                legend: { orientation: 'h', y: -0.25 },
+                margin: { t: 10, l: 60, r: 60, b: 60 },
+                legend: { orientation: 'h', y: -0.3 },
             }, { responsive: true });
         },
     };
