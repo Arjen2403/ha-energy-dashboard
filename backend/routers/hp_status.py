@@ -25,6 +25,7 @@ from ..db import ha_db
 from ..views import (
     query_binary_state_history,
     query_hourly_dhw_temp,
+    query_hourly_flows,
     query_hourly_outside_temp,
     query_hourly_price,
 )
@@ -320,6 +321,7 @@ def get_dhw_pattern(
         with ha_db() as conn:
             dhw_rows = query_binary_state_history(conn, DHW_ENTITY, from_ts, to_ts)
             price_rows = query_hourly_price(conn, from_ts, to_ts)
+            flows_rows = query_hourly_flows(conn, from_ts, to_ts)
 
         segments = _build_on_segments(dhw_rows, from_ts, to_ts)
 
@@ -381,6 +383,22 @@ def get_dhw_pattern(
             for h in range(24)
         ]
 
+        # Gemiddelde PV-opbrengst per uur-van-de-dag (kWh) — basis voor het
+        # avond-advies (eerst zon, dan pas net).
+        pv_sum = [0.0] * 24
+        pv_n = [0] * 24
+        for r in flows_rows:
+            if r.get("pv_kwh") is None:
+                continue
+            hour_dt = datetime.fromtimestamp(r["hour_ts"], tz=timezone.utc).astimezone(NL_TZ)
+            h = hour_dt.hour
+            pv_sum[h] += r["pv_kwh"]
+            pv_n[h] += 1
+        pv_by_hour = [
+            {"hour": h, "avg_pv_kwh": round(pv_sum[h] / pv_n[h], 3) if pv_n[h] else None}
+            for h in range(24)
+        ]
+
         # Simpele aanbeveling: top-3 uren waarin nu al het meest geladen wordt
         # vs. top-3 gemiddeld goedkoopste uren in dezelfde periode.
         pattern_hours = sorted(
@@ -415,6 +433,35 @@ def get_dhw_pattern(
                 f"'DHW boost/forceren'-optie heeft die vanuit HA aan te sturen is."
             )
 
+        # Laadadvies per douchevenster: warm water klaar vóór 06:00 (ochtend)
+        # en vóór 19:00 (avond). Ochtend = 's nachts geen zon → goedkoopste
+        # net-uur. Avond = eerst PV-overschot midden op de dag, anders het
+        # goedkoopste net-uur in de namiddag (weg van de avondpiek).
+        def _cheapest_in(lo, hi):
+            cand = [p for p in price_by_hour
+                    if p["avg_price_eur_per_kwh"] is not None and lo <= p["hour"] < hi]
+            return min(cand, key=lambda p: p["avg_price_eur_per_kwh"]) if cand else None
+
+        def _most_pv_in(lo, hi):
+            cand = [p for p in pv_by_hour
+                    if p["avg_pv_kwh"] is not None and lo <= p["hour"] < hi]
+            return max(cand, key=lambda p: p["avg_pv_kwh"]) if cand else None
+
+        morning = _cheapest_in(0, 6)
+        evening_pv = _most_pv_in(10, 16)
+        evening_grid = _cheapest_in(12, 19)
+
+        PV_MIN_KWH = 0.5  # drempel voor "noemenswaardig PV-overschot"
+        evening_pv_ok = bool(evening_pv and evening_pv["avg_pv_kwh"] and evening_pv["avg_pv_kwh"] >= PV_MIN_KWH)
+
+        charge_plan = {
+            "shower_windows": {"morning": [6, 9], "evening": [19, 22]},
+            "morning": ({"hour": morning["hour"], "price": morning["avg_price_eur_per_kwh"]} if morning else None),
+            "evening_pv": ({"hour": evening_pv["hour"], "pv_kwh": evening_pv["avg_pv_kwh"]} if evening_pv else None),
+            "evening_pv_ok": evening_pv_ok,
+            "evening_grid": ({"hour": evening_grid["hour"], "price": evening_grid["avg_price_eur_per_kwh"]} if evening_grid else None),
+        }
+
         response = {
             "range": range_,
             "from_ts": _iso(from_ts),
@@ -424,6 +471,8 @@ def get_dhw_pattern(
             "heatmap": heatmap,
             "hour_profile": hour_profile,
             "price_by_hour": price_by_hour,
+            "pv_by_hour": pv_by_hour,
+            "charge_plan": charge_plan,
             "recommendation": {
                 "pattern_hours": sorted(pattern_hour_set),
                 "cheapest_hours": sorted(cheapest_hour_set),

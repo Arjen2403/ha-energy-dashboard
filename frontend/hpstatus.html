@@ -124,6 +124,52 @@
         <div id="dhw-temp-chart" class="h-72"></div>
     </div>
 
+    <!-- Aanbevolen laadtijden -->
+    <div class="bg-white p-4 rounded shadow mb-6" x-show="!loading && pattern && pattern.charge_plan">
+        <h2 class="text-sm font-semibold text-gray-700 mb-1">Aanbevolen laadtijden</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Zodat het water warm is vóór je douche (ochtend vanaf 06:00, avond vanaf 19:00). Berekend uit de gemiddelde spotprijs én PV-opbrengst per uur over de gekozen periode.</p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Ochtend -->
+            <div class="border-l-4 border-blue-500 bg-blue-50 rounded p-3">
+                <div class="text-xs uppercase tracking-wide font-semibold text-blue-700">Ochtenddouche · klaar vóór 06:00</div>
+                <template x-if="pattern.charge_plan.morning">
+                    <div>
+                        <div class="text-2xl font-bold text-blue-900 mt-1" x-text="hhmm(pattern.charge_plan.morning.hour)"></div>
+                        <div class="text-sm text-blue-900">goedkoopste net-uur 's nachts (<span x-text="eur(pattern.charge_plan.morning.price)"></span>/kWh)</div>
+                        <div class="text-xs text-gray-500 mt-1">'s Nachts geen zon — puur op prijs; laad in dit daluur.</div>
+                    </div>
+                </template>
+                <template x-if="!pattern.charge_plan.morning">
+                    <div class="text-sm text-gray-500 mt-1">Geen prijsdata voor de nacht in deze periode.</div>
+                </template>
+            </div>
+            <!-- Avond -->
+            <div class="border-l-4 rounded p-3"
+                 :class="pattern.charge_plan.evening_pv_ok ? 'border-green-500 bg-green-50' : 'border-amber-500 bg-amber-50'">
+                <div class="text-xs uppercase tracking-wide font-semibold"
+                     :class="pattern.charge_plan.evening_pv_ok ? 'text-green-700' : 'text-amber-700'">Avonddouche · klaar vóór 19:00</div>
+                <template x-if="pattern.charge_plan.evening_pv_ok && pattern.charge_plan.evening_pv">
+                    <div>
+                        <div class="text-2xl font-bold text-green-900 mt-1" x-text="hhmm(pattern.charge_plan.evening_pv.hour)"></div>
+                        <div class="text-sm text-green-900">op PV-overschot (~<span x-text="pattern.charge_plan.evening_pv.pv_kwh.toFixed(1)"></span> kWh/u zon)</div>
+                        <div class="text-xs text-gray-600 mt-1" x-show="pattern.charge_plan.evening_grid">
+                            Zon te weinig? Terugval op <span class="font-medium" x-text="hhmm(pattern.charge_plan.evening_grid.hour)"></span>
+                            (<span x-text="eur(pattern.charge_plan.evening_grid.price)"></span>/kWh).
+                        </div>
+                    </div>
+                </template>
+                <template x-if="!pattern.charge_plan.evening_pv_ok">
+                    <div>
+                        <div class="text-2xl font-bold text-amber-900 mt-1" x-text="pattern.charge_plan.evening_grid ? hhmm(pattern.charge_plan.evening_grid.hour) : '–'"></div>
+                        <div class="text-sm text-amber-900" x-show="pattern.charge_plan.evening_grid">goedkoopste net-uur 's middags (<span x-text="pattern.charge_plan.evening_grid ? eur(pattern.charge_plan.evening_grid.price) : ''"></span>/kWh)</div>
+                        <div class="text-xs text-gray-600 mt-1">Weinig PV in deze periode — op prijs geladen, weg van de avondpiek (17–21u).</div>
+                    </div>
+                </template>
+            </div>
+        </div>
+        <p class="text-xs text-gray-400 mt-3">Vergelijk met wanneer je nu laadt (profiel hieronder). Advies is informatief; automatisch sturen vereist een 'DHW forceren'-optie vanuit HA.</p>
+    </div>
+
     <!-- DHW-patroon -->
     <div class="bg-white p-4 rounded shadow mb-6" x-show="!loading && pattern">
         <h2 class="text-sm font-semibold text-gray-700 mb-1">DHW-patroon: wanneer laadt de boiler tapwater op</h2>
@@ -226,6 +272,9 @@ function hpStatusApp() {
             const h = minutes / 60;
             return h.toFixed(1) + ' u';
         },
+
+        hhmm(h) { return String(h).padStart(2, '0') + ':00'; },
+        eur(v) { return (v === null || v === undefined) ? '–' : '€ ' + v.toFixed(3); },
 
         async load() {
             await Promise.all([this.loadLive(), this.loadRange(), this.loadPattern()]);
