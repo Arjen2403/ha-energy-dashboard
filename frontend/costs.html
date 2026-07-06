@@ -13,6 +13,8 @@
     <title>Costs — HA Energy Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+    <script src="/shared.js"></script>
+    <script src="/shared-insights.js"></script>
     <script defer src="https://unpkg.com/alpinejs@3.13.0/dist/cdn.min.js"></script>
 </head>
 <body class="bg-gray-50 text-gray-900">
@@ -60,6 +62,9 @@
         Geen kosten-data beschikbaar voor deze periode. Spot-prijzen via Nord Pool zijn pas
         vanaf 25 april 2026 18:00 UTC beschikbaar — voor eerdere dagen is geen kostenberekening mogelijk.
     </div>
+
+    <!-- Verdict-kader (impr. #1) -->
+    <div x-show="!loading && !error && days.length > 0" x-html="verdictHtml"></div>
 
     <!-- Daily decomposition chart -->
     <div x-show="!loading && !error && days.length > 0"
@@ -144,6 +149,10 @@ function costsApp() {
         error: null,
         days: [],
         totals: { net: 0, varImport: 0, varExport: 0, fixed: 0 },
+
+        get verdictHtml() {
+            return (window.ES && this.days.length) ? ES.verdictBox(ES.costs.insight(this.totals, this.days.length)) : '';
+        },
 
         async setRange(r) {
             this.range = r;

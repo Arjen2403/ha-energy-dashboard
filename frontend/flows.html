@@ -14,6 +14,8 @@
     <!-- Tailwind voor styling, Plotly voor charts, Alpine voor reactivity -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+    <script src="/shared.js"></script>
+    <script src="/shared-insights.js"></script>
     <script defer src="https://unpkg.com/alpinejs@3.13.0/dist/cdn.min.js"></script>
 </head>
 <body class="bg-gray-50 text-gray-900">
@@ -59,6 +61,9 @@
     <!-- Error-staat: zichtbaar als er een fout was. -->
     <div x-show="error" class="bg-red-50 border border-red-200 text-red-700 p-4 rounded mb-4"
          x-text="error"></div>
+
+    <!-- Verdict-kader (impr. #1) -->
+    <div x-show="!loading && !error && rows.length" x-html="verdictHtml"></div>
 
     <!-- Chart-container. Plotly tekent erin via id 'flows-chart'. -->
     <div x-show="!loading && !error" class="bg-white p-4 rounded shadow mb-6">
@@ -141,6 +146,10 @@ function flowsApp() {
                 t.hp += r.heatpump_kwh || 0;
             }
             this.totals = t;
+        },
+
+        get verdictHtml() {
+            return (window.ES && this.rows.length) ? ES.verdictBox(ES.flows.insight(this.totals)) : '';
         },
 
         draw() {

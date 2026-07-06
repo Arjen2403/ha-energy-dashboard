@@ -13,6 +13,8 @@
     <title>Now — HA Energy Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+    <script src="/shared.js"></script>
+    <script src="/shared-insights.js"></script>
     <script defer src="https://unpkg.com/alpinejs@3.13.0/dist/cdn.min.js"></script>
 </head>
 <body class="bg-gray-50 text-gray-900">
@@ -43,6 +45,9 @@
     </div>
     <div x-show="error" class="bg-red-50 border border-red-200 text-red-700 p-4 rounded mb-4"
          x-text="error"></div>
+
+    <!-- Verdict-kader (impr. #1) -->
+    <div x-show="kpi" x-html="verdictHtml"></div>
 
     <!-- KPI cards -->
     <div x-show="kpi" class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
@@ -137,6 +142,10 @@ function nowApp() {
         formatTemp(t) {
             if (t === null || t === undefined) return '–';
             return t.toFixed(1) + ' °C';
+        },
+
+        get verdictHtml() {
+            return (this.kpi && window.ES) ? ES.verdictBox(ES.overview.insight(this.kpi)) : '';
         },
 
         draw() {
