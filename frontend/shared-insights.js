@@ -7,7 +7,8 @@
   const fmt = ES.fmt;
 
   // Grid/fase-inzicht via de groepen-map.
-  function gridInsight(phases, imbalancePct, trend) {
+  // measured (optioneel) = { quooker_w (L1), afwasmachine_w (L2), hp_w (3-fase) }
+  function gridInsight(phases, imbalancePct, trend, measured) {
     const byLabel = {};
     (phases || []).forEach((p) => { byLabel[p.label] = p.power_w; });
     const base = {
@@ -20,12 +21,26 @@
       const v = byLabel[L];
       if (v != null && Math.abs(v) > heaviestAbs) { heaviestAbs = Math.abs(v); heaviest = L; }
     });
+    // Gemeten verbruikers per fase: Quooker=L1, Afwasmachine=L2 (HomeWizard
+    // sockets), WP 3-fase → ~1/3 per fase. Deze zijn hard, geen schatting.
+    const meas = measured || {};
+    const perPhase = { L1: [], L2: [], L3: [] };
+    if (meas.quooker_w != null) perPhase.L1.push({ name: "Quooker", w: meas.quooker_w });
+    if (meas.afwasmachine_w != null) perPhase.L2.push({ name: "Afwasmachine", w: meas.afwasmachine_w });
+    if (meas.hp_w != null) { const s = meas.hp_w / 3; ["L1", "L2", "L3"].forEach((L) => perPhase[L].push({ name: "WP (~⅓)", w: s })); }
+    const socketOf = { L1: { name: "Quooker", w: meas.quooker_w }, L2: { name: "Afwasmachine", w: meas.afwasmachine_w } };
+
     const SPIKE_W = 800, attribution = [];
     ["L1", "L2", "L3"].forEach((L) => {
       const now = byLabel[L], b = base[L];
-      if (now != null && b != null && now - b > SPIKE_W) {
+      if (now == null || b == null || now - b <= SPIKE_W) return;
+      const delta = now - b;
+      const s = socketOf[L];
+      if (s && s.w != null && s.w > 300 && Math.abs(s.w - delta) < Math.max(500, delta * 0.4)) {
+        attribution.push(`${L}: gemeten — ${s.name} trekt nu ${fmt.w(s.w)} en verklaart de piek.`);
+      } else {
         const loads = ES.heavyLoadsOn(L);
-        if (loads.length) attribution.push(`${L} +${fmt.w(now - b)} boven basislast — waarschijnlijk: ${loads.join(" of ")}.`);
+        if (loads.length) attribution.push(`${L} +${fmt.w(delta)} boven basislast — waarschijnlijk: ${loads.join(" of ")}.`);
       }
     });
     let tone = "info", title, lines = [];
@@ -43,7 +58,7 @@
     recs.push({ tone: "info", text: "Oven (10) en warmtepomp (11) zijn de twee zware lasten op L3 — vermijd de oven tijdens een WP-verwarmingspiek." });
     recs.push({ tone: "info", text: "Draai enkelfase-apparaten bij PV-overschot: lokaal zelfverbruik verlaagt zowel import als cross-fase export." });
     recs.push({ tone: "info", text: "Of onbalans geld kost hangt af van je meterafrekening (per fase vs. som) — nog te verifiëren." });
-    return { tone, title, lines, recs, base, heaviest };
+    return { tone, title, lines, recs, base, heaviest, measured: perPhase };
   }
 
   // Now: live momentopname.

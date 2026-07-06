@@ -11,11 +11,16 @@ function gridApp() {
         trendLoaded: false,
         trendData: [],
         insight: null,
+        measured: {},
 
         phaseColor(L) { return ES.phase[L] || '#6b7280'; },
         fmtW(v) { return ES.fmt.w(v); },
         groupsOf(L) { return ES.groups.filter(r => r.phase === L); },
         baselineOf(L) { return this.insight ? this.insight.base[L] : null; },
+        measuredOn(L) {
+            const m = (this.insight && this.insight.measured) ? this.insight.measured[L] : null;
+            return (m || []).filter(d => d.w != null && Math.abs(d.w) > 50);
+        },
 
         get verdictHtml() {
             if (!this.insight) return '';
@@ -25,11 +30,26 @@ function gridApp() {
 
         computeInsight() {
             if (!this.phases.some(p => p.power_w !== null)) { this.insight = null; return; }
-            this.insight = ES.grid.insight(this.phases, this.imbalance_pct, this.trendData || []);
+            this.insight = ES.grid.insight(this.phases, this.imbalance_pct, this.trendData || [], this.measured);
         },
 
         async load() {
-            await Promise.all([this.loadLive(), this.trendLoaded ? Promise.resolve() : this.loadTrend()]);
+            await Promise.all([
+                this.loadLive(),
+                this.loadOverview(),
+                this.trendLoaded ? Promise.resolve() : this.loadTrend(),
+            ]);
+        },
+
+        async loadOverview() {
+            try {
+                const res = await fetch('/api/overview');
+                if (!res.ok) return;
+                const data = await res.json();
+                const k = data.kpi || {};
+                this.measured = { quooker_w: k.quooker_w, afwasmachine_w: k.afwasmachine_w, hp_w: k.heatpump_w };
+                this.computeInsight();
+            } catch (e) { /* stille fout — gemeten data is optioneel */ }
         },
 
         async loadLive() {
@@ -103,6 +123,6 @@ function gridApp() {
 document.addEventListener('alpine:init', () => {
     setInterval(() => {
         const app = document.querySelector('[x-data]')?._x_dataStack?.[0];
-        if (app) app.loadLive();
+        if (app) { app.loadLive(); app.loadOverview(); }
     }, 30000);
 });
