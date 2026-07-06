@@ -21,14 +21,14 @@
 <nav class="bg-white shadow px-6 py-3 flex gap-6 mb-6 flex-wrap">
     <span class="font-bold text-blue-600">HA Energy Dashboard</span>
     <a href="/index.html" class="text-blue-600 font-semibold">Overzicht</a>
-    <a href="/now.html" class="text-gray-500 hover:text-blue-600">Now</a>
-    <a href="/flows.html" class="text-gray-500 hover:text-blue-600">Energy Flows</a>
-    <a href="/costs.html" class="text-gray-500 hover:text-blue-600">Costs</a>
-    <a href="/heatpump.html" class="text-gray-500 hover:text-blue-600">Heat Pump</a>
-    <a href="/hpstatus.html" class="text-gray-500 hover:text-blue-600">HP Status</a>
-    <a href="/solar.html" class="text-gray-500 hover:text-blue-600">Solar</a>
+    <a href="/now.html" class="text-gray-500 hover:text-blue-600">Nu</a>
+    <a href="/flows.html" class="text-gray-500 hover:text-blue-600">Energiestromen</a>
+    <a href="/costs.html" class="text-gray-500 hover:text-blue-600">Kosten</a>
+    <a href="/heatpump.html" class="text-gray-500 hover:text-blue-600">Warmtepomp</a>
+    <a href="/hpstatus.html" class="text-gray-500 hover:text-blue-600">WP-status</a>
+    <a href="/solar.html" class="text-gray-500 hover:text-blue-600">Zon</a>
     <a href="/strategy.html" class="text-gray-500 hover:text-blue-600">Strategie</a>
-    <a href="/grid.html" class="text-gray-500 hover:text-blue-600">Grid / Fases</a>
+    <a href="/grid.html" class="text-gray-500 hover:text-blue-600">Net / Fases</a>
 </nav>
 
 <div class="max-w-6xl mx-auto px-6" x-data="homeApp()" x-init="load()">
@@ -40,7 +40,17 @@
         </div>
     </div>
 
-    <p class="text-sm text-gray-500 italic mb-6">Eén headline per onderdeel (laatste 7 dagen, tenzij live). Klik een kaart voor de details.</p>
+    <p class="text-sm text-gray-500 italic mb-4">Eén headline per onderdeel. Klik een kaart voor de details. De vergelijking zet de huidige periode af tegen de vorige even lange periode.</p>
+
+    <!-- Periode-toggle voor de vergelijking -->
+    <div class="mb-6 flex gap-2 items-center">
+        <span class="text-sm text-gray-500">Vergelijk:</span>
+        <template x-for="p in periods" :key="p.value">
+            <button @click="setPeriod(p.value)"
+                :class="period === p.value ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-100'"
+                class="px-3 py-1 rounded border border-gray-300 text-sm transition" x-text="p.label"></button>
+        </template>
+    </div>
 
     <!-- Domein-kaarten -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
@@ -50,6 +60,7 @@
                :style="'border-color:' + c.color">
                 <div class="text-xs uppercase tracking-wide text-gray-500" x-text="c.label"></div>
                 <div class="text-2xl font-bold mt-1 text-gray-900" x-text="c.value"></div>
+                <div class="mt-0.5" x-show="c.deltaHtml" x-html="c.deltaHtml"></div>
                 <div class="text-sm text-gray-600 mt-1" x-text="c.insight"></div>
             </a>
         </template>
@@ -70,18 +81,27 @@ function homeApp() {
         recs: [],
         loading: true,
         lastUpdate: '–',
+        period: 'week',
+        periods: [{ value: 'week', label: 'Week' }, { value: 'maand', label: 'Maand' }],
 
         get recsHtml() { return window.ES ? ES.recList(this.recs) : ''; },
+
+        setPeriod(p) { this.period = p; this.load(); },
 
         fW(v) { return ES.fmt.w(v); },
         fKwh(v) { return ES.fmt.kwh(v); },
         fEur(v) { return ES.fmt.eur(v); },
         fPrice(v) { return ES.fmt.price(v); },
         hhmm(h) { return String(h).padStart(2, '0') + ':00'; },
-        tone(t) {
-            return { good: '#16a34a', warn: '#f59e0b', bad: '#dc2626', info: '#3b82f6' }[t] || '#6b7280';
-        },
+        tone(t) { return { good: '#16a34a', warn: '#f59e0b', bad: '#dc2626', info: '#3b82f6' }[t] || '#6b7280'; },
         sum(arr, f) { return (arr || []).reduce((a, x) => a + (f(x) || 0), 0); },
+
+        // Delta-badge (huidige vs vorige periode). higherIsWorse: true = hoger is slechter.
+        deltaOf(cur, prev, higherIsWorse) {
+            if (cur == null || prev == null || !window.ES) return '';
+            const cmp = ES.compare(cur, prev, higherIsWorse);
+            return cmp ? ES.deltaBadge(cmp, 'vs vorige ' + this.period) : '';
+        },
 
         async grab(url) {
             try { const r = await fetch(url); return r.ok ? await r.json() : null; }
@@ -90,109 +110,124 @@ function homeApp() {
 
         async load() {
             this.loading = true;
-            const [ov, costs, solar, hp, grid, strat, dhw] = await Promise.all([
+            const N = this.period === 'week' ? 7 : 30;
+            const now = new Date();
+            const iso = ms => new Date(ms).toISOString().slice(0, 19);
+            const cur = `range=custom&from=${iso(now - N * 864e5)}&to=${iso(now.getTime())}`;
+            const prev = `range=custom&from=${iso(now - 2 * N * 864e5)}&to=${iso(now - N * 864e5)}`;
+            const label = this.period === 'week' ? '7d' : '30d';
+
+            const [ov, grid, dhw, strat, costsC, costsP, solarC, solarP, hpC, hpP] = await Promise.all([
                 this.grab('/api/overview'),
-                this.grab('/api/costs?range=7d'),
-                this.grab('/api/solar?range=7d'),
-                this.grab('/api/heatpump?range=7d'),
                 this.grab('/api/grid/live'),
-                this.grab('/api/strategy?range=7d&battery_kwh=10'),
                 this.grab('/api/heatpump/status/dhw_pattern?range=30d'),
+                this.grab('/api/strategy?range=7d&battery_kwh=10'),
+                this.grab('/api/costs?' + cur), this.grab('/api/costs?' + prev),
+                this.grab('/api/solar?' + cur), this.grab('/api/solar?' + prev),
+                this.grab('/api/heatpump?' + cur), this.grab('/api/heatpump?' + prev),
             ]);
 
             const cards = [], recs = [];
+            const S = (a, f) => this.sum(a, f);
 
-            // Nu
+            // Nu (live)
             const k = ov && ov.kpi;
-            if (k) {
+            if (k) cards.push({
+                key: 'now', label: 'Nu', href: '/now.html',
+                value: (k.grid_w >= 0 ? this.fW(k.grid_w) + ' van net' : this.fW(-k.grid_w) + ' terug'),
+                insight: 'Zon ' + this.fW(k.pv_w) + ' · ' + this.fPrice(k.import_price_eur_per_kwh),
+                color: this.tone(k.grid_w < 0 ? 'good' : 'info'), deltaHtml: '',
+            });
+
+            // Kosten (vergelijking)
+            if (costsC && costsC.days && costsC.days.length) {
+                const net = S(costsC.days, d => d.net_eur);
+                const netP = (costsP && costsP.days && costsP.days.length) ? S(costsP.days, d => d.net_eur) : null;
                 cards.push({
-                    key: 'now', label: 'Nu', href: '/now.html',
-                    value: (k.grid_w >= 0 ? this.fW(k.grid_w) + ' van net' : this.fW(-k.grid_w) + ' terug'),
-                    insight: 'Zon ' + this.fW(k.pv_w) + ' · ' + this.fPrice(k.import_price_eur_per_kwh),
-                    color: this.tone(k.grid_w < 0 ? 'good' : 'info'),
+                    key: 'costs', label: 'Kosten (' + label + ')', href: '/costs.html',
+                    value: this.fEur(net), insight: 'Gem. ' + this.fEur(net / costsC.days.length) + '/dag',
+                    color: this.tone(net > 0 ? 'bad' : 'good'), deltaHtml: this.deltaOf(net, netP, true),
                 });
+                if (net > 0) recs.push({ tone: 'info', text: `Netto energiekosten deze ${this.period}: ${this.fEur(net)} — grootste post is import.` });
             }
 
-            // Kosten
-            if (costs && costs.days && costs.days.length) {
-                const net = this.sum(costs.days, d => d.net_eur);
-                cards.push({
-                    key: 'costs', label: 'Kosten (7d)', href: '/costs.html',
-                    value: this.fEur(net),
-                    insight: 'Gem. ' + this.fEur(net / costs.days.length) + '/dag',
-                    color: this.tone(net > 0 ? 'bad' : 'good'),
-                });
-                if (net > 0) recs.push({ tone: 'info', text: `Netto energiekosten deze week ${this.fEur(net)} — grootste post is import.` });
-            }
-
-            // Zon
-            if (solar && solar.days && solar.days.length) {
-                const pv = this.sum(solar.days, d => d.pv_kwh);
-                const sc = this.sum(solar.days, d => d.self_consumed_kwh);
+            // Zon (vergelijking op zelfverbruik-ratio)
+            if (solarC && solarC.days && solarC.days.length) {
+                const pv = S(solarC.days, d => d.pv_kwh), sc = S(solarC.days, d => d.self_consumed_kwh);
                 const ratio = pv > 0 ? sc / pv : null;
+                let ratioP = null;
+                if (solarP && solarP.days && solarP.days.length) {
+                    const pvP = S(solarP.days, d => d.pv_kwh), scP = S(solarP.days, d => d.self_consumed_kwh);
+                    ratioP = pvP > 0 ? scP / pvP : null;
+                }
                 cards.push({
-                    key: 'solar', label: 'Zon (7d)', href: '/solar.html',
+                    key: 'solar', label: 'Zon (' + label + ')', href: '/solar.html',
                     value: ratio != null ? (ratio * 100).toFixed(0) + '% zelfverbruik' : '–',
                     insight: this.fKwh(pv) + ' opgewekt',
                     color: this.tone(ratio != null && ratio >= 0.4 ? 'good' : 'warn'),
+                    deltaHtml: this.deltaOf(ratio, ratioP, false),
                 });
                 if (ratio != null && ratio < 0.4) recs.push({ tone: 'warn', text: `Zonne-zelfverbruik laag (${(ratio * 100).toFixed(0)}%) — verschuif zware apparaten naar de zonuren.` });
             }
 
-            // Warmtepomp
-            if (hp && hp.days && hp.days.length) {
-                const cons = this.sum(hp.days, d => d.consumption_total_kwh);
-                const supp = this.sum(hp.days, d => d.supplied_total_kwh);
+            // Warmtepomp (vergelijking op COP)
+            if (hpC && hpC.days && hpC.days.length) {
+                const cons = S(hpC.days, d => d.consumption_total_kwh), supp = S(hpC.days, d => d.supplied_total_kwh);
                 const cop = cons > 0 ? supp / cons : null;
+                let copP = null;
+                if (hpP && hpP.days && hpP.days.length) {
+                    const cP = S(hpP.days, d => d.consumption_total_kwh), sP = S(hpP.days, d => d.supplied_total_kwh);
+                    copP = cP > 0 ? sP / cP : null;
+                }
                 cards.push({
-                    key: 'hp', label: 'Warmtepomp (7d)', href: '/heatpump.html',
+                    key: 'hp', label: 'Warmtepomp (' + label + ')', href: '/heatpump.html',
                     value: cop != null ? 'COP ' + cop.toFixed(2) : '–',
                     insight: this.fKwh(cons) + ' verbruikt',
                     color: this.tone(cop == null ? 'info' : cop >= 3 ? 'good' : cop >= 2.5 ? 'warn' : 'bad'),
+                    deltaHtml: this.deltaOf(cop, copP, false),
                 });
-                if (cop != null && cop < 2.8) recs.push({ tone: 'warn', text: `Warmtepomp-COP ${cop.toFixed(2)} aan de lage kant — check delta-T/instellingen (zie Warmtepomp).` });
+                if (cop != null && cop < 2.8) recs.push({ tone: 'warn', text: `Warmtepomp-COP ${cop.toFixed(2)} aan de lage kant — check delta-T (zie Warmtepomp).` });
             }
 
-            // Warmwater (DHW laadadvies)
+            // Warm water (advies)
             const cp = dhw && dhw.charge_plan;
             if (cp) {
-                const morning = cp.morning ? this.hhmm(cp.morning.hour) : '–';
-                const evening = (cp.evening_pv_ok && cp.evening_pv) ? this.hhmm(cp.evening_pv.hour) + ' (zon)'
+                const m = cp.morning ? this.hhmm(cp.morning.hour) : '–';
+                const e = (cp.evening_pv_ok && cp.evening_pv) ? this.hhmm(cp.evening_pv.hour) + ' (zon)'
                     : (cp.evening_grid ? this.hhmm(cp.evening_grid.hour) : '–');
                 cards.push({
                     key: 'dhw', label: 'Warm water', href: '/hpstatus.html',
-                    value: morning + ' · ' + evening,
-                    insight: 'Aanbevolen laadtijden (ochtend · avond)',
-                    color: this.tone('info'),
+                    value: m + ' · ' + e, insight: 'Aanbevolen laadtijden (ochtend · avond)',
+                    color: this.tone('info'), deltaHtml: '',
                 });
-                if (cp.morning) recs.push({ tone: 'info', text: `Warm water: laad 's ochtends rond ${morning} en 's avonds ${evening}.` });
+                if (cp.morning) recs.push({ tone: 'info', text: `Warm water: laad 's ochtends rond ${m} en 's avonds ${e}.` });
             }
 
-            // Fasebalans
+            // Fasebalans (live)
             if (grid && grid.imbalance_pct != null) {
                 const imb = grid.imbalance_pct;
                 cards.push({
                     key: 'grid', label: 'Fasebalans (live)', href: '/grid.html',
                     value: imb.toFixed(0) + '% onbalans',
                     insight: imb < 10 ? 'Goed gebalanceerd' : imb < 25 ? 'Matige onbalans' : 'Hoge onbalans',
-                    color: this.tone(imb < 10 ? 'good' : imb < 25 ? 'warn' : 'bad'),
+                    color: this.tone(imb < 10 ? 'good' : imb < 25 ? 'warn' : 'bad'), deltaHtml: '',
                 });
-                if (imb >= 25) recs.push({ tone: 'warn', text: `Hoge fase-onbalans (${imb.toFixed(0)}%) — spreid zware apparaten over de fasen (zie Grid).` });
+                if (imb >= 25) recs.push({ tone: 'warn', text: `Hoge fase-onbalans (${imb.toFixed(0)}%) — spreid zware apparaten (zie Net / Fases).` });
             }
 
-            // Strategie (saldering-pijn)
+            // Strategie
             if (strat && strat.scenarios) {
-                const cur = strat.scenarios.find(s => s.id === 'current');
-                const noSal = strat.scenarios.find(s => s.id === 'no_saldering');
-                const pain = (cur && noSal) ? noSal.total_eur - cur.total_eur : null;
+                const c = strat.scenarios.find(s => s.id === 'current');
+                const ns = strat.scenarios.find(s => s.id === 'no_saldering');
+                const pain = (c && ns) ? ns.total_eur - c.total_eur : null;
                 const dc = strat.day_count;
                 cards.push({
                     key: 'strategy', label: 'Strategie', href: '/strategy.html',
                     value: pain != null ? this.fEur(pain) + (dc ? ' (' + dc + 'd)' : '') : '–',
                     insight: 'Saldering-pijn na 2027 zonder maatregelen',
-                    color: this.tone('bad'),
+                    color: this.tone('bad'), deltaHtml: '',
                 });
-                if (pain != null && pain > 0.5) recs.push({ tone: 'info', text: `Na 2027: ~${this.fEur(pain)} saldering-pijn over ${dc} dagen — bekijk batterij/curtailment in Strategie.` });
+                if (pain != null && pain > 0.5) recs.push({ tone: 'info', text: `Na 2027: ~${this.fEur(pain)} saldering-pijn over ${dc} dagen — bekijk Strategie.` });
             }
 
             this.cards = cards;

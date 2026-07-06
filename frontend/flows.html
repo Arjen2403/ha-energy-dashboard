@@ -10,7 +10,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Energy">
     <meta name="theme-color" content="#3b82f6">
-    <title>Energy Flows — HA Dashboard</title>
+    <title>Energiestromen — HA Dashboard</title>
     <!-- Tailwind voor styling, Plotly voor charts, Alpine voor reactivity -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
@@ -24,21 +24,21 @@
 <nav class="bg-white shadow px-6 py-3 flex gap-6 mb-6">
     <span class="font-bold text-blue-600">HA Energy Dashboard</span>
     <a href="/index.html" class="text-gray-500 hover:text-blue-600">Overzicht</a>
-    <a href="/now.html" class="text-gray-500 hover:text-blue-600">Now</a>
-    <a href="/flows.html" class="text-gray-500 hover:text-blue-600">Energy Flows</a>
-    <a href="/costs.html" class="text-gray-500 hover:text-blue-600">Costs</a>
-    <a href="/heatpump.html" class="text-gray-500 hover:text-blue-600">Heat Pump</a>
-    <a href="/hpstatus.html" class="text-gray-500 hover:text-blue-600">HP Status</a>
-    <a href="/solar.html" class="text-gray-500 hover:text-blue-600">Solar</a>
+    <a href="/now.html" class="text-gray-500 hover:text-blue-600">Nu</a>
+    <a href="/flows.html" class="text-blue-600 font-semibold">Energiestromen</a>
+    <a href="/costs.html" class="text-gray-500 hover:text-blue-600">Kosten</a>
+    <a href="/heatpump.html" class="text-gray-500 hover:text-blue-600">Warmtepomp</a>
+    <a href="/hpstatus.html" class="text-gray-500 hover:text-blue-600">WP-status</a>
+    <a href="/solar.html" class="text-gray-500 hover:text-blue-600">Zon</a>
     <a href="/strategy.html" class="text-gray-500 hover:text-blue-600">Strategie</a>
-    <a href="/grid.html" class="text-gray-500 hover:text-blue-600">Grid / Fases</a>
+    <a href="/grid.html" class="text-gray-500 hover:text-blue-600">Net / Fases</a>
 </nav>
 
 <!-- De Alpine x-data koppelt deze div aan de flowsApp() functie onderaan.
      x-init zorgt dat load() draait zodra de pagina klaar is met inladen. -->
 <div class="max-w-6xl mx-auto px-6" x-data="flowsApp()" x-init="load()">
 
-    <h1 class="text-2xl font-bold mb-4">Energy Flows</h1>
+    <h1 class="text-2xl font-bold mb-4">Energiestromen</h1>
 
     <!-- Range-selector. Knoppen zijn template-loop; klik triggert setRange(). -->
     <div class="mb-6 flex gap-2 flex-wrap">
