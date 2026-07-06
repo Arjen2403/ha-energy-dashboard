@@ -22,7 +22,12 @@ from cachetools import TTLCache
 from fastapi import APIRouter, HTTPException, Query
 
 from ..db import ha_db
-from ..views import query_binary_state_history, query_hourly_outside_temp, query_hourly_price
+from ..views import (
+    query_binary_state_history,
+    query_hourly_dhw_temp,
+    query_hourly_outside_temp,
+    query_hourly_price,
+)
 
 router = APIRouter()
 
@@ -214,6 +219,7 @@ def get_heatpump_status(
             heating_rows = query_binary_state_history(conn, HEATING_ENTITY, from_ts, to_ts)
             dhw_rows = query_binary_state_history(conn, DHW_ENTITY, from_ts, to_ts)
             temp_rows = query_hourly_outside_temp(conn, from_ts, to_ts)
+            dhw_temp_rows = query_hourly_dhw_temp(conn, from_ts, to_ts)
 
         heating_segments = _build_on_segments(heating_rows, from_ts, to_ts)
         dhw_segments = _build_on_segments(dhw_rows, from_ts, to_ts)
@@ -254,6 +260,14 @@ def get_heatpump_status(
             for r in temp_rows
         ]
 
+        dhw_temp = [
+            {
+                "ts": _iso(r["hour_ts"]),
+                "value": round(r["dhw_temp_c"], 1) if r["dhw_temp_c"] is not None else None,
+            }
+            for r in dhw_temp_rows
+        ]
+
         response = {
             "range": range,
             "from_ts": _iso(from_ts),
@@ -264,6 +278,7 @@ def get_heatpump_status(
             },
             "daily": daily_list,
             "outside_temp": outside_temp,
+            "dhw_temp": dhw_temp,
         }
         _status_cache[cache_key] = response
         _status_stale[cache_key] = response

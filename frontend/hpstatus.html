@@ -117,6 +117,13 @@
         <div id="temp-heating-chart" class="h-64"></div>
     </div>
 
+    <!-- Tapwater-temperatuur + laadperioden -->
+    <div class="bg-white p-4 rounded shadow mb-6" x-show="!loading && dhwTemp.length">
+        <h2 class="text-sm font-semibold text-gray-700 mb-1">Tapwater-temperatuur + laadperioden</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Blauwe lijn = tanktemperatuur (uurgemiddelde, sensor.boiler_dhw_current_intern_temperature). Paarse band = tapwater aan het laden. Zo zie je precies wanneer de boiler opwarmt en hoe snel hij daarna weer afkoelt tussen twee laadmomenten — dat afkoeltempo bepaalt hoe vroeg "te vroeg" is.</p>
+        <div id="dhw-temp-chart" class="h-72"></div>
+    </div>
+
     <!-- DHW-patroon -->
     <div class="bg-white p-4 rounded shadow mb-6" x-show="!loading && pattern">
         <h2 class="text-sm font-semibold text-gray-700 mb-1">DHW-patroon: wanneer laadt de boiler tapwater op</h2>
@@ -183,6 +190,7 @@ function hpStatusApp() {
         daily: [],
         segments: { heating: [], dhw: [] },
         outsideTemp: [],
+        dhwTemp: [],
         pattern: null,
         totals: { heatingMin: 0, dhwMin: 0, heatingCycles: 0, dhwCycles: 0 },
         loading: false,
@@ -247,6 +255,7 @@ function hpStatusApp() {
                 this.daily = data.daily || [];
                 this.segments = data.segments || { heating: [], dhw: [] };
                 this.outsideTemp = data.outside_temp || [];
+                this.dhwTemp = data.dhw_temp || [];
                 this.computeTotals();
                 this.$nextTick(() => this.draw());
             } catch (e) {
@@ -306,6 +315,32 @@ function hpStatusApp() {
             }, { responsive: true });
 
             this.drawTempHeating();
+            this.drawDhwTemp();
+        },
+
+        drawDhwTemp() {
+            if (!this.dhwTemp.length) return;
+            const line = {
+                type: 'scatter', mode: 'lines', name: 'Tanktemperatuur',
+                x: this.dhwTemp.map(t => t.ts),
+                y: this.dhwTemp.map(t => t.value),
+                line: { color: '#3b82f6', width: 2 },
+                connectgaps: false,
+                hovertemplate: '%{x|%d-%m %H:%M}: %{y:.1f}°C<extra></extra>',
+            };
+            // Paarse banden = DHW-laadperioden (die verwarmen de tank).
+            const shapes = this.segments.dhw.map(s => ({
+                type: 'rect', xref: 'x', yref: 'paper',
+                x0: s.start, x1: s.end, y0: 0, y1: 1,
+                fillcolor: '#8b5cf6', opacity: 0.18, line: { width: 0 },
+            }));
+            Plotly.newPlot('dhw-temp-chart', [line], {
+                xaxis: { type: 'date', title: '' },
+                yaxis: { title: '°C' },
+                shapes: shapes,
+                margin: { t: 10, l: 50, r: 20, b: 40 },
+                showlegend: false,
+            }, { responsive: true });
         },
 
         drawTempHeating() {

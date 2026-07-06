@@ -488,3 +488,28 @@ def query_hourly_price(conn, from_ts: int, to_ts: int):
         V_HOURLY_PRICE, {"from_ts": from_ts, "to_ts": to_ts}
     ).fetchall()
     return [dict(r) for r in rows]
+
+# v_hourly_dhw_temp
+#
+# Hourly-mean van de tapwater-tanktemperatuur (interne boiler-temp,
+# sensor.boiler_dhw_current_intern_temperature). Gebruikt op de HP Status
+# pagina om de temperatuurlijn te combineren met de DHW-laadperiodes: je ziet
+# de tank opwarmen tijdens een laadband en daarna langzaam afkoelen.
+
+V_HOURLY_DHW_TEMP = """
+SELECT s.start_ts AS hour_ts, s.mean AS dhw_temp_c
+FROM statistics s
+JOIN statistics_meta sm ON sm.id = s.metadata_id
+WHERE sm.statistic_id = 'sensor.boiler_dhw_current_intern_temperature'
+  AND s.start_ts >= :from_ts
+  AND s.start_ts <= :to_ts
+ORDER BY s.start_ts
+"""
+
+
+def query_hourly_dhw_temp(conn, from_ts: int, to_ts: int):
+    """Voer v_hourly_dhw_temp uit en retourneer een lijst dicts."""
+    rows = conn.execute(
+        V_HOURLY_DHW_TEMP, {"from_ts": from_ts, "to_ts": to_ts}
+    ).fetchall()
+    return [dict(r) for r in rows]
