@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Energy">
+    <meta name="theme-color" content="#3b82f6">
+    <title>Overzicht — HA Energy Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/shared.js"></script>
+    <script src="/shared-insights.js"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.13.0/dist/cdn.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-900">
+
+<nav class="bg-white shadow px-6 py-3 flex gap-6 mb-6 flex-wrap">
+    <span class="font-bold text-blue-600">HA Energy Dashboard</span>
+    <a href="/index.html" class="text-blue-600 font-semibold">Overzicht</a>
+    <a href="/now.html" class="text-gray-500 hover:text-blue-600">Now</a>
+    <a href="/flows.html" class="text-gray-500 hover:text-blue-600">Energy Flows</a>
+    <a href="/costs.html" class="text-gray-500 hover:text-blue-600">Costs</a>
+    <a href="/heatpump.html" class="text-gray-500 hover:text-blue-600">Heat Pump</a>
+    <a href="/hpstatus.html" class="text-gray-500 hover:text-blue-600">HP Status</a>
+    <a href="/solar.html" class="text-gray-500 hover:text-blue-600">Solar</a>
+    <a href="/strategy.html" class="text-gray-500 hover:text-blue-600">Strategie</a>
+    <a href="/grid.html" class="text-gray-500 hover:text-blue-600">Grid / Fases</a>
+</nav>
+
+<div class="max-w-6xl mx-auto px-6" x-data="homeApp()" x-init="load()">
+
+    <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <h1 class="text-2xl font-bold">Overzicht</h1>
+        <div class="text-sm text-gray-500">
+            Alles in één oogopslag · <span x-text="loading ? 'laden…' : ('bijgewerkt ' + lastUpdate)"></span>
+        </div>
+    </div>
+
+    <p class="text-sm text-gray-500 italic mb-6">Eén headline per onderdeel (laatste 7 dagen, tenzij live). Klik een kaart voor de details.</p>
+
+    <!-- Domein-kaarten -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+        <template x-for="c in cards" :key="c.key">
+            <a :href="c.href"
+               class="block bg-white p-4 rounded shadow border-l-4 hover:shadow-md transition"
+               :style="'border-color:' + c.color">
+                <div class="text-xs uppercase tracking-wide text-gray-500" x-text="c.label"></div>
+                <div class="text-2xl font-bold mt-1 text-gray-900" x-text="c.value"></div>
+                <div class="text-sm text-gray-600 mt-1" x-text="c.insight"></div>
+            </a>
+        </template>
+    </div>
+
+    <!-- Aanbevelingen -->
+    <div class="bg-white p-4 rounded shadow">
+        <h2 class="text-sm font-semibold text-gray-700 mb-3">Belangrijkste aanbevelingen</h2>
+        <div x-html="recsHtml"></div>
+    </div>
+
+</div>
+
+<script>
+function homeApp() {
+    return {
+        cards: [],
+        recs: [],
+        loading: true,
+        lastUpdate: '–',
+
+        get recsHtml() { return window.ES ? ES.recList(this.recs) : ''; },
+
+        fW(v) { return ES.fmt.w(v); },
+        fKwh(v) { return ES.fmt.kwh(v); },
+        fEur(v) { return ES.fmt.eur(v); },
+        fPrice(v) { return ES.fmt.price(v); },
+        hhmm(h) { return String(h).padStart(2, '0') + ':00'; },
+        tone(t) {
+            return { good: '#16a34a', warn: '#f59e0b', bad: '#dc2626', info: '#3b82f6' }[t] || '#6b7280';
+        },
+        sum(arr, f) { return (arr || []).reduce((a, x) => a + (f(x) || 0), 0); },
+
+        async grab(url) {
+            try { const r = await fetch(url); return r.ok ? await r.json() : null; }
+            catch (e) { return null; }
+        },
+
+        async load() {
+            this.loading = true;
+            const [ov, costs, solar, hp, grid, strat, dhw] = await Promise.all([
+                this.grab('/api/overview'),
+                this.grab('/api/costs?range=7d'),
+                this.grab('/api/solar?range=7d'),
+                this.grab('/api/heatpump?range=7d'),
+                this.grab('/api/grid/live'),
+                this.grab('/api/strategy?range=7d&battery_kwh=10'),
+                this.grab('/api/heatpump/status/dhw_pattern?range=30d'),
+            ]);
+
+            const cards = [], recs = [];
+
+            // Nu
+            const k = ov && ov.kpi;
+            if (k) {
+                cards.push({
+                    key: 'now', label: 'Nu', href: '/now.html',
+                    value: (k.grid_w >= 0 ? this.fW(k.grid_w) + ' van net' : this.fW(-k.grid_w) + ' terug'),
+                    insight: 'Zon ' + this.fW(k.pv_w) + ' · ' + this.fPrice(k.import_price_eur_per_kwh),
+                    color: this.tone(k.grid_w < 0 ? 'good' : 'info'),
+                });
+            }
+
+            // Kosten
+            if (costs && costs.days && costs.days.length) {
+                const net = this.sum(costs.days, d => d.net_eur);
+                cards.push({
+                    key: 'costs', label: 'Kosten (7d)', href: '/costs.html',
+                    value: this.fEur(net),
+                    insight: 'Gem. ' + this.fEur(net / costs.days.length) + '/dag',
+                    color: this.tone(net > 0 ? 'bad' : 'good'),
+                });
+                if (net > 0) recs.push({ tone: 'info', text: `Netto energiekosten deze week ${this.fEur(net)} — grootste post is import.` });
+            }
+
+            // Zon
+            if (solar && solar.days && solar.days.length) {
+                const pv = this.sum(solar.days, d => d.pv_kwh);
+                const sc = this.sum(solar.days, d => d.self_consumed_kwh);
+                const ratio = pv > 0 ? sc / pv : null;
+                cards.push({
+                    key: 'solar', label: 'Zon (7d)', href: '/solar.html',
+                    value: ratio != null ? (ratio * 100).toFixed(0) + '% zelfverbruik' : '–',
+                    insight: this.fKwh(pv) + ' opgewekt',
+                    color: this.tone(ratio != null && ratio >= 0.4 ? 'good' : 'warn'),
+                });
+                if (ratio != null && ratio < 0.4) recs.push({ tone: 'warn', text: `Zonne-zelfverbruik laag (${(ratio * 100).toFixed(0)}%) — verschuif zware apparaten naar de zonuren.` });
+            }
+
+            // Warmtepomp
+            if (hp && hp.days && hp.days.length) {
+                const cons = this.sum(hp.days, d => d.consumption_total_kwh);
+                const supp = this.sum(hp.days, d => d.supplied_total_kwh);
+                const cop = cons > 0 ? supp / cons : null;
+                cards.push({
+                    key: 'hp', label: 'Warmtepomp (7d)', href: '/heatpump.html',
+                    value: cop != null ? 'COP ' + cop.toFixed(2) : '–',
+                    insight: this.fKwh(cons) + ' verbruikt',
+                    color: this.tone(cop == null ? 'info' : cop >= 3 ? 'good' : cop >= 2.5 ? 'warn' : 'bad'),
+                });
+                if (cop != null && cop < 2.8) recs.push({ tone: 'warn', text: `Warmtepomp-COP ${cop.toFixed(2)} aan de lage kant — check delta-T/instellingen (zie Warmtepomp).` });
+            }
+
+            // Warmwater (DHW laadadvies)
+            const cp = dhw && dhw.charge_plan;
+            if (cp) {
+                const morning = cp.morning ? this.hhmm(cp.morning.hour) : '–';
+                const evening = (cp.evening_pv_ok && cp.evening_pv) ? this.hhmm(cp.evening_pv.hour) + ' (zon)'
+                    : (cp.evening_grid ? this.hhmm(cp.evening_grid.hour) : '–');
+                cards.push({
+                    key: 'dhw', label: 'Warm water', href: '/hpstatus.html',
+                    value: morning + ' · ' + evening,
+                    insight: 'Aanbevolen laadtijden (ochtend · avond)',
+                    color: this.tone('info'),
+                });
+                if (cp.morning) recs.push({ tone: 'info', text: `Warm water: laad 's ochtends rond ${morning} en 's avonds ${evening}.` });
+            }
+
+            // Fasebalans
+            if (grid && grid.imbalance_pct != null) {
+                const imb = grid.imbalance_pct;
+                cards.push({
+                    key: 'grid', label: 'Fasebalans (live)', href: '/grid.html',
+                    value: imb.toFixed(0) + '% onbalans',
+                    insight: imb < 10 ? 'Goed gebalanceerd' : imb < 25 ? 'Matige onbalans' : 'Hoge onbalans',
+                    color: this.tone(imb < 10 ? 'good' : imb < 25 ? 'warn' : 'bad'),
+                });
+                if (imb >= 25) recs.push({ tone: 'warn', text: `Hoge fase-onbalans (${imb.toFixed(0)}%) — spreid zware apparaten over de fasen (zie Grid).` });
+            }
+
+            // Strategie (saldering-pijn)
+            if (strat && strat.scenarios) {
+                const cur = strat.scenarios.find(s => s.id === 'current');
+                const noSal = strat.scenarios.find(s => s.id === 'no_saldering');
+                const pain = (cur && noSal) ? noSal.total_eur - cur.total_eur : null;
+                const dc = strat.day_count;
+                cards.push({
+                    key: 'strategy', label: 'Strategie', href: '/strategy.html',
+                    value: pain != null ? this.fEur(pain) + (dc ? ' (' + dc + 'd)' : '') : '–',
+                    insight: 'Saldering-pijn na 2027 zonder maatregelen',
+                    color: this.tone('bad'),
+                });
+                if (pain != null && pain > 0.5) recs.push({ tone: 'info', text: `Na 2027: ~${this.fEur(pain)} saldering-pijn over ${dc} dagen — bekijk batterij/curtailment in Strategie.` });
+            }
+
+            this.cards = cards;
+            this.recs = recs.slice(0, 5);
+            this.lastUpdate = new Date().toLocaleTimeString('nl-NL');
+            this.loading = false;
+        },
+    };
+}
+</script>
+
+</body>
+</html>
