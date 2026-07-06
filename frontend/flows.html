@@ -72,8 +72,15 @@
         <div id="flows-chart" class="h-96"></div>
     </div>
 
+    <!-- Verbruik per apparaat (HomeWizard energy sockets + warmtepomp). -->
+    <div x-show="!loading && !error && rows.length" class="bg-white p-4 rounded shadow mb-6">
+        <h2 class="text-sm text-gray-500 mb-2">Verbruik per apparaat (kWh/dag)</h2>
+        <p class="text-xs text-gray-500 italic mb-3">Cyaan = Quooker, paars = Afwasmachine (beide via HomeWizard energy socket), grijs = Warmtepomp. Deze zitten al verwerkt in je totale verbruik; dit laat zien hoeveel elk apparaat per dag trok.</p>
+        <div id="appliance-chart" class="h-72"></div>
+    </div>
+
     <!-- Totalen-kaarten met aggregaten over de range. -->
-    <div x-show="!loading && !error" class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div x-show="!loading && !error" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <div class="bg-white p-4 rounded shadow">
             <div class="text-sm text-gray-500">Grid import</div>
             <div class="text-xl font-semibold" x-text="totals.import_.toFixed(1) + ' kWh'"></div>
@@ -89,6 +96,14 @@
         <div class="bg-white p-4 rounded shadow">
             <div class="text-sm text-gray-500">Warmtepomp</div>
             <div class="text-xl font-semibold" x-text="totals.hp.toFixed(1) + ' kWh'"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Quooker</div>
+            <div class="text-xl font-semibold text-cyan-600" x-text="totals.quooker.toFixed(1) + ' kWh'"></div>
+        </div>
+        <div class="bg-white p-4 rounded shadow">
+            <div class="text-sm text-gray-500">Afwasmachine</div>
+            <div class="text-xl font-semibold text-violet-600" x-text="totals.afwasmachine.toFixed(1) + ' kWh'"></div>
         </div>
     </div>
 
@@ -111,7 +126,7 @@ function flowsApp() {
         rows: [],
         // 'import' en 'export' zijn JavaScript reserved words in strict mode,
         // vandaar de underscore-suffix.
-        totals: { import_: 0, export_: 0, pv: 0, hp: 0 },
+        totals: { import_: 0, export_: 0, pv: 0, hp: 0, quooker: 0, afwasmachine: 0 },
 
         // Methodes
         async setRange(r) {
@@ -138,12 +153,14 @@ function flowsApp() {
         },
 
         computeTotals() {
-            const t = { import_: 0, export_: 0, pv: 0, hp: 0 };
+            const t = { import_: 0, export_: 0, pv: 0, hp: 0, quooker: 0, afwasmachine: 0 };
             for (const r of this.rows) {
                 t.import_ += r.import_kwh || 0;
                 t.export_ += r.export_kwh || 0;
                 t.pv += r.pv_kwh || 0;
                 t.hp += r.heatpump_kwh || 0;
+                t.quooker += r.quooker_kwh || 0;
+                t.afwasmachine += r.afwasmachine_kwh || 0;
             }
             this.totals = t;
         },
@@ -163,10 +180,13 @@ function flowsApp() {
             const byDay = {};
             for (const r of this.rows) {
                 const day = fmt.format(new Date(r.hour));
-                if (!byDay[day]) byDay[day] = { import_: 0, export_: 0, pv: 0 };
+                if (!byDay[day]) byDay[day] = { import_: 0, export_: 0, pv: 0, quooker: 0, afwasmachine: 0, hp: 0 };
                 byDay[day].import_ += r.import_kwh || 0;
                 byDay[day].export_ += r.export_kwh || 0;
                 byDay[day].pv += r.pv_kwh || 0;
+                byDay[day].quooker += r.quooker_kwh || 0;
+                byDay[day].afwasmachine += r.afwasmachine_kwh || 0;
+                byDay[day].hp += r.heatpump_kwh || 0;
             }
 
             const days = Object.keys(byDay).sort();
@@ -198,6 +218,20 @@ function flowsApp() {
             };
 
             Plotly.newPlot('flows-chart', traces, layout, { responsive: true });
+
+            // Tweede chart: verbruik per apparaat (kWh/dag).
+            const applianceTraces = [
+                { type: 'bar', name: 'Quooker',     x: days, y: days.map(d => byDay[d].quooker),      marker: { color: '#06b6d4' } },
+                { type: 'bar', name: 'Afwasmachine', x: days, y: days.map(d => byDay[d].afwasmachine), marker: { color: '#8b5cf6' } },
+                { type: 'bar', name: 'Warmtepomp',   x: days, y: days.map(d => byDay[d].hp),           marker: { color: '#6b7280' } },
+            ];
+            Plotly.newPlot('appliance-chart', applianceTraces, {
+                barmode: 'group',
+                xaxis: { title: 'Datum' },
+                yaxis: { title: 'kWh' },
+                margin: { t: 10, l: 50, r: 20, b: 60 },
+                legend: { orientation: 'h', y: -0.2 },
+            }, { responsive: true });
         },
     };
 }

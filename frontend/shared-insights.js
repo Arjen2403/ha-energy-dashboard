@@ -86,6 +86,7 @@
     lines.push(`Verbruik ${fmt.kwh(consumption)}, PV ${fmt.kwh(t.pv)}${selfUse != null ? ` (${(selfUse * 100).toFixed(0)}% direct zelf gebruikt)` : ""}.`);
     lines.push(netGrid >= 0 ? `Netto ${fmt.kwh(netGrid)} van het net gehaald.` : `Netto ${fmt.kwh(-netGrid)} teruggeleverd.`);
     if (t.hp && consumption > 0) lines.push(`Warmtepomp ${fmt.kwh(t.hp)} — ${(t.hp / consumption * 100).toFixed(0)}% van je verbruik.`);
+    if (t.quooker || t.afwasmachine) lines.push(`Quooker ${fmt.kwh(t.quooker || 0)}, afwasmachine ${fmt.kwh(t.afwasmachine || 0)} (HomeWizard sockets).`);
     return { tone, title, lines };
   }
 
